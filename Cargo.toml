@@ -1,0 +1,23 @@
+[workspace]
+members = ["./src/*", "./examples/*"]
+default-members = ["src/mate"]
+
+[workspace.package]
+authors = ["Leo Borai <estebanborai@gmail.com>"]
+version = "0.0.0"
+edition = "2024"
+description = ""
+documentation = ""
+
+[workspace.dependencies]
+anyhow = "1.0"
+log = "0.4"
+proc-macro2 = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+syn = { version = "2.0", features = ["full", "extra-traits"] }
+quote = "1.0"
+wasmtime = "40"
+
+mate_job = { path = "./src/job" }
+mate_runner = { path = "./src/runner" }

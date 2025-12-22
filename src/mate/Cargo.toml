@@ -1,0 +1,18 @@
+[package]
+name = "mate"
+edition.workspace = true
+version.workspace = true
+authors.workspace = true
+description.workspace = true
+documentation.workspace = true
+
+[[bin]]
+name = "mate"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true}
+
+mate_runner = { workspace = true }
