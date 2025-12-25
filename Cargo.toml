@@ -1,5 +1,5 @@
 [workspace]
-members = ["./src/*", "./examples/*"]
+members = ["./src/*"]
 default-members = ["src/mate"]
 
 [workspace.package]
@@ -19,6 +19,8 @@ syn = { version = "2.0", features = ["full", "extra-traits"] }
 tokio = "1"
 quote = "1.0"
 wasmtime = "40"
+wasmtime-wasi = "40"
+wasmtime-wasi-http = "40"
 
 mate_job = { path = "./src/job" }
 mate_runner = { path = "./src/runner" }

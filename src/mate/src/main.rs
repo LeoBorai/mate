@@ -7,13 +7,13 @@ use serde_json::Value;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let wasm = Path::new("complex.wasm");
-    let runner = WasmRunner::new(wasm)?;
+    let wasm = Path::new("client-code.wasm");
+    let runner = WasmRunner::new(wasm.to_path_buf());
     let input = r#"{
-        "name": "Alice",
-        "email": "alice@mate.io",
-        "age": 30,
-        "tags": ["new user", "beta tester"]
+        "api_url": "https://httpbin.org/post",
+        "data": {
+            "sample_key": "sample_value"
+        }
     }"#;
 
     let output: Value = runner.execute(input.as_bytes().to_vec()).await?;
