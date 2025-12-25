@@ -7,7 +7,7 @@ use serde_json::Value;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let wasm = Path::new("client-code.wasm");
+    let wasm = Path::new("http.wasm");
     let runner = WasmRunner::new(wasm.to_path_buf());
     let input = r#"{
         "api_url": "https://httpbin.org/post",
