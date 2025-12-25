@@ -1,6 +1,6 @@
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{ItemFn, parse_macro_input};
+use syn::{FnArg, ItemFn, ReturnType, Type, parse_macro_input};
 
 #[proc_macro_attribute]
 pub fn mate_object(_attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -30,8 +30,56 @@ pub fn mate_handler(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let fn_block = &input_fn.block;
     let fn_attrs = &input_fn.attrs;
     let fn_sig = &input_fn.sig;
-    let _inputs = &fn_sig.inputs;
-    let _output = &fn_sig.output;
+
+    // Extract the input type from the first parameter
+    let input_type = match fn_sig.inputs.first() {
+        Some(FnArg::Typed(pat_type)) => &pat_type.ty,
+        _ => {
+            return syn::Error::new_spanned(
+                &fn_sig.inputs,
+                "Handler function must have at least one parameter",
+            )
+            .to_compile_error()
+            .into();
+        }
+    };
+
+    // Extract the output type from the return type
+    let output_type = match &fn_sig.output {
+        ReturnType::Type(_, ty) => {
+            // Handle Result<T, E> -> extract T
+            if let Type::Path(type_path) = ty.as_ref() {
+                if let Some(segment) = type_path.path.segments.last() {
+                    if segment.ident == "Result" {
+                        // Extract the Ok type from Result<T, E>
+                        if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
+                            if let Some(syn::GenericArgument::Type(ok_type)) = args.args.first() {
+                                ok_type
+                            } else {
+                                ty.as_ref()
+                            }
+                        } else {
+                            ty.as_ref()
+                        }
+                    } else {
+                        ty.as_ref()
+                    }
+                } else {
+                    ty.as_ref()
+                }
+            } else {
+                ty.as_ref()
+            }
+        }
+        ReturnType::Default => {
+            return syn::Error::new_spanned(
+                &fn_sig.output,
+                "Handler function must return a Result type",
+            )
+            .to_compile_error()
+            .into();
+        }
+    };
 
     let expanded = quote! {
         #(#fn_attrs)*
@@ -41,12 +89,24 @@ pub fn mate_handler(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
         #[wstd::main]
         async fn main() -> Result<(), Box<dyn std::error::Error>> {
-            match #fn_name().await {
-                Ok(_) => Ok(()),
-                Err(e) => {
-                    Err(e.into())
-                }
-            }
+            use std::io::{self, Read, Write};
+
+            // Read input from stdin
+            let mut buff = String::new();
+            io::stdin().read_to_string(&mut buff)?;
+
+            let input: #input_type = serde_json::from_str(&buff)
+                .map_err(|e| format!("Failed to deserialize input: {}", e))?;
+
+            let result: #output_type = #fn_name(input).await?;
+
+            let output_json = serde_json::to_string(&result)
+                .map_err(|e| format!("Failed to serialize output: {}", e))?;
+
+            io::stdout().write_all(output_json.as_bytes())?;
+            io::stdout().flush()?;
+
+            Ok(())
         }
     };
 

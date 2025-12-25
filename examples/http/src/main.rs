@@ -1,4 +1,4 @@
-use std::io::{self, Read};
+use std::io::Read;
 
 use anyhow::Result;
 use wstd::http::{Body, BodyExt, Client, Method, Request};
@@ -12,11 +12,7 @@ struct Config {
 }
 
 #[mate_handler]
-async fn send_http_request() -> Result<()> {
-    let mut json_input = String::new();
-    io::stdin().read_to_string(&mut json_input)?;
-
-    let config: Config = serde_json::from_str(&json_input)?;
+async fn send_http_request(config: Config) -> Result<()> {
     let client = Client::new();
     let mut request = Request::builder();
     request = request.uri(config.api_url).method(Method::POST);
