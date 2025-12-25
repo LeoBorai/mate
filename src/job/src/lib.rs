@@ -91,7 +91,6 @@ pub fn mate_handler(_attr: TokenStream, item: TokenStream) -> TokenStream {
         async fn main() -> Result<(), Box<dyn std::error::Error>> {
             use std::io::{self, Read, Write};
 
-            // Read input from stdin
             let mut buff = String::new();
             io::stdin().read_to_string(&mut buff)?;
 
@@ -100,10 +99,10 @@ pub fn mate_handler(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
             let result: #output_type = #fn_name(input).await?;
 
-            let output_json = serde_json::to_string(&result)
+            let output = serde_json::to_string(&result)
                 .map_err(|e| format!("Failed to serialize output: {}", e))?;
 
-            io::stdout().write_all(output_json.as_bytes())?;
+            io::stdout().write_all(output.as_bytes())?;
             io::stdout().flush()?;
 
             Ok(())
