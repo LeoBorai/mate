@@ -87,26 +87,43 @@ pub fn mate_handler(_attr: TokenStream, item: TokenStream) -> TokenStream {
             #fn_block
         }
 
-        #[wstd::main]
-        async fn main() -> Result<(), Box<dyn std::error::Error>> {
-            use std::io::{self, Read, Write};
+        mod bindings {
+            wit_bindgen::generate!({
+                inline: r"
+                    package mate:runtime;
 
-            let mut buff = String::new();
-            io::stdin().read_to_string(&mut buff)?;
-
-            let input: #input_type = serde_json::from_str(&buff)
-                .map_err(|e| format!("Failed to deserialize input: {}", e))?;
-
-            let result: #output_type = #fn_name(input).await?;
-
-            let output = serde_json::to_string(&result)
-                .map_err(|e| format!("Failed to serialize output: {}", e))?;
-
-            io::stdout().write_all(output.as_bytes())?;
-            io::stdout().flush()?;
-
-            Ok(())
+                    world mate-runtime {
+                        export handler: async func(data: string) -> result<string, string>;
+                    }",
+            });
         }
+
+        use anyhow::Result;
+        use bindings::Guest;
+
+        struct Component;
+
+        impl Guest for Component {
+            async fn handler(data: String) -> Result<String, String> {
+                use std::io::{self, Read, Write};
+
+                let mut buff = String::new();
+                io::stdin().read_to_string(&mut buff).map_err(|e| format!("Failed to read input: {}", e))?;
+
+                let input: #input_type = serde_json::from_str(&buff)
+                    .map_err(|e| format!("Failed to deserialize input: {}", e))?;
+
+                let result: Result<#output_type> = #fn_name(input).await;
+
+                match result {
+                    Ok(val) => serde_json::to_string(&val)
+                        .map_err(|e| format!("Failed to serialize output: {}", e)),
+                    Err(err) => Err(format!("Handler error: {}", err)),
+                }
+            }
+        }
+
+        bindings::export!(Component with_types_in bindings);
     };
 
     TokenStream::from(expanded)

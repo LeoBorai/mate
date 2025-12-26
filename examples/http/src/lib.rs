@@ -1,4 +1,3 @@
-use anyhow::Result;
 use wstd::http::{Body, BodyExt, Client, Method, Request};
 
 use mate_job::{mate_handler, mate_object};
