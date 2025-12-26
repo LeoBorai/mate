@@ -1184,7 +1184,6 @@ dependencies = [
  "serde_json",
  "syn",
  "wit-bindgen 0.50.0",
- "wstd",
 ]
 
 [[package]]

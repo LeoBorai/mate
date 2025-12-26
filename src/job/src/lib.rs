@@ -90,15 +90,20 @@ pub fn mate_handler(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 inline: r"
                     package mate:runtime;
 
-                    world mate-runtime {
-                        export handler: async func(data: string) -> result<string, string>;
+                    interface mate-handler {
+                        handler: async func(data: string) -> result<string, string>;
+                    }
+
+                    world mate {
+                        import mate-handler;
+                        export mate-handler;
                     }",
             });
         }
 
         struct Component;
 
-        impl bindings::Guest for Component {
+        impl bindings::exports::mate::runtime::mate_handler::Guest for Component {
             async fn handler(data: String) -> Result<String, String> {
                 use std::io::{self, Read, Write};
 

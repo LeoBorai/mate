@@ -1,13 +1,13 @@
-use std::path::PathBuf;
-
 use anyhow::{Context, Result};
 use serde_json::Value;
 use wasmtime::component::{Component, Linker, ResourceTable};
-use wasmtime::*;
-use wasmtime_wasi::p2::bindings::Command;
-use wasmtime_wasi::p2::pipe::{MemoryInputPipe, MemoryOutputPipe};
+use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 use wasmtime_wasi_http::{WasiHttpCtx, WasiHttpView};
+
+/// Fully qualified name of the handler function in the WASM module.
+/// Format: `<package>/<interface>#<function>`
+const HANDLER_FUNC_FQN: &str = "mate:runtime/mate-handler#handler";
 
 pub struct ComponentRunStates {
     pub wasi_ctx: WasiCtx,
@@ -35,11 +35,11 @@ impl WasiHttpView for ComponentRunStates {
 }
 
 pub struct WasmRunner {
-    wasm_module: PathBuf,
+    wasm_module: Vec<u8>,
 }
 
 impl WasmRunner {
-    pub fn new(wasm_module: PathBuf) -> Self {
+    pub fn new(wasm_module: Vec<u8>) -> Self {
         Self { wasm_module }
     }
 
@@ -52,38 +52,50 @@ impl WasmRunner {
         wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
         wasmtime_wasi_http::add_only_http_to_linker_async(&mut linker)?;
 
-        let json_bytes = input;
-        let stdin = MemoryInputPipe::new(json_bytes);
-        let stdout = MemoryOutputPipe::new(usize::MAX);
-        let wasi = WasiCtx::builder()
-            .stdin(stdin)
-            .inherit_stdout()
-            .inherit_stderr()
-            .build();
+        let json_value =
+            serde_json::from_slice::<Value>(&input).context("Failed to parse input JSON")?;
+        let json = serde_json::to_string(&json_value).context("Failed to serialize input JSON")?;
+        let wasi = WasiCtx::builder().build();
         let state = ComponentRunStates {
             wasi_ctx: wasi,
             resource_table: ResourceTable::new(),
             http_ctx: WasiHttpCtx::new(),
         };
         let mut store = Store::new(&engine, state);
-        let component = Component::from_file(&engine, self.wasm_module)?;
-        let command = Command::instantiate_async(&mut store, &component, &linker).await?;
-        let program_result = command.wasi_cli_run().call_run(&mut store).await?;
+        let component = Component::from_binary(&engine, &self.wasm_module)?;
+        let instance = linker.instantiate_async(&mut store, &component).await?;
+        let func = instance
+            .get_typed_func::<(&str,), (Result<String, String>,)>(&mut store, HANDLER_FUNC_FQN)
+            .context(format!("Function '{HANDLER_FUNC_FQN}' not found"))?;
+        let (output,) = func.call_async(&mut store, (&json,)).await?;
+        println!("OUT: {:?}", output);
 
-        if program_result.is_err() {
-            anyhow::bail!("WASM module execution failed");
-        }
+        //         // Extract the result
+        //         let output = match &results[0] {
+        //             Val::String(s) => s.to_string(),
+        //             _ => anyhow::bail!("Expected string result"),
+        //         };
 
-        drop(store);
+        //         Ok(output)
 
-        let output_bytes = stdout
-            .try_into_inner()
-            .context("Failed to retrieve stdout")?
-            .into_iter()
-            .collect::<Vec<u8>>();
-        let output_str = String::from_utf8(output_bytes)?;
-        let output: Value = serde_json::from_str(&output_str)?;
+        // let command = Command::instantiate_async(&mut store, &component, &linker).await?;
+        // let program_result = command.wasi_cli_run().call_run(&mut store).await?;
 
-        Ok(output)
+        // if program_result.is_err() {
+        //     anyhow::bail!("WASM module execution failed");
+        // }
+
+        // drop(store);
+
+        // let output_bytes = stdout
+        //     .try_into_inner()
+        //     .context("Failed to retrieve stdout")?
+        //     .into_iter()
+        //     .collect::<Vec<u8>>();
+        // let output_str = String::from_utf8(output_bytes)?;
+        // let output: Value = serde_json::from_str(&output_str)?;
+
+        // Ok(output)
+        Ok(Value::Null)
     }
 }

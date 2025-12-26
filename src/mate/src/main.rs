@@ -8,7 +8,8 @@ use serde_json::Value;
 #[tokio::main]
 async fn main() -> Result<()> {
     let wasm = Path::new("http.wasm");
-    let runner = WasmRunner::new(wasm.to_path_buf());
+    let bytes = std::fs::read(wasm)?;
+    let runner = WasmRunner::new(bytes);
     let input = r#"{
         "api_url": "https://httpbin.org/post",
         "data": {
