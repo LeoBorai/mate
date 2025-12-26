@@ -82,10 +82,8 @@ pub fn mate_handler(_attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     let expanded = quote! {
-        #(#fn_attrs)*
-        #fn_vis #fn_sig {
-            #fn_block
-        }
+        use anyhow::Result;
+        use wit_bindgen;
 
         mod bindings {
             wit_bindgen::generate!({
@@ -98,12 +96,9 @@ pub fn mate_handler(_attr: TokenStream, item: TokenStream) -> TokenStream {
             });
         }
 
-        use anyhow::Result;
-        use bindings::Guest;
-
         struct Component;
 
-        impl Guest for Component {
+        impl bindings::Guest for Component {
             async fn handler(data: String) -> Result<String, String> {
                 use std::io::{self, Read, Write};
 
@@ -124,6 +119,11 @@ pub fn mate_handler(_attr: TokenStream, item: TokenStream) -> TokenStream {
         }
 
         bindings::export!(Component with_types_in bindings);
+
+        #(#fn_attrs)*
+        #fn_vis #fn_sig {
+            #fn_block
+        }
     };
 
     TokenStream::from(expanded)
