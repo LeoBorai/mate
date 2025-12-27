@@ -87,7 +87,9 @@ pub fn mate_handler(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
         mod bindings {
             wit_bindgen::generate!({
+                async: true,
                 inline: r"
+                    //@ async = true
                     package mate:runtime;
 
                     interface mate-handler {
