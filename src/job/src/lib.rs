@@ -89,23 +89,23 @@ pub fn mate_handler(_attr: TokenStream, item: TokenStream) -> TokenStream {
             wit_bindgen::generate!({
                 async: true,
                 inline: r"
-                    //@ async = true
-                    package mate:runtime;
+                    package mate:runtime@0.1.0;
 
-                    interface mate-handler {
+                    interface api {
                         handler: async func(data: string) -> result<string, string>;
                     }
 
                     world mate {
-                        import mate-handler;
-                        export mate-handler;
+                        import api;
+                        export api;
                     }",
             });
         }
 
         struct Component;
 
-        impl bindings::exports::mate::runtime::mate_handler::Guest for Component {
+        impl bindings::exports::mate::runtime::api::Guest for Component {
+            #[unsafe(no_mangle)]
             async fn handler(data: String) -> Result<String, String> {
                 use std::io::{self, Read, Write};
 
