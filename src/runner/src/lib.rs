@@ -47,6 +47,7 @@ impl WasmRunner {
         let mut config = Config::new();
         config
             .async_support(true)
+            .wasm_component_model(true)
             .wasm_component_model_async(true)
             .wasm_component_model_async_builtins(true);
         let engine = Engine::new(&config)?;
@@ -70,35 +71,8 @@ impl WasmRunner {
         let func = instance
             .get_typed_func::<(String,), (Result<String, String>,)>(&mut store, HANDLER_FUNC_FQN)
             .context(format!("Function '{HANDLER_FUNC_FQN}' not found"))?;
-        let (output,) = func.call_async(&mut store, (json,)).await?;
-        println!("OUT: {:?}", output);
+        let (_output,) = func.call_async(&mut store, (json,)).await?;
 
-        //         // Extract the result
-        //         let output = match &results[0] {
-        //             Val::String(s) => s.to_string(),
-        //             _ => anyhow::bail!("Expected string result"),
-        //         };
-
-        //         Ok(output)
-
-        // let command = Command::instantiate_async(&mut store, &component, &linker).await?;
-        // let program_result = command.wasi_cli_run().call_run(&mut store).await?;
-
-        // if program_result.is_err() {
-        //     anyhow::bail!("WASM module execution failed");
-        // }
-
-        // drop(store);
-
-        // let output_bytes = stdout
-        //     .try_into_inner()
-        //     .context("Failed to retrieve stdout")?
-        //     .into_iter()
-        //     .collect::<Vec<u8>>();
-        // let output_str = String::from_utf8(output_bytes)?;
-        // let output: Value = serde_json::from_str(&output_str)?;
-
-        // Ok(output)
         Ok(Value::Null)
     }
 }
