@@ -45,7 +45,10 @@ impl WasmRunner {
 
     pub async fn execute(self, input: Vec<u8> /* Bytes? */) -> Result<Value> {
         let mut config = Config::new();
-        config.async_support(true);
+        config
+            .async_support(true)
+            .wasm_component_model_async(true)
+            .wasm_component_model_async_builtins(true);
         let engine = Engine::new(&config)?;
         let mut linker = Linker::new(&engine);
 
