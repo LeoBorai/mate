@@ -14,5 +14,6 @@ path = "src/main.rs"
 anyhow = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true}
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 mate_runner = { workspace = true }

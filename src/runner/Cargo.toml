@@ -15,5 +15,5 @@ anyhow = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true}
 wasmtime = { workspace = true }
-
-mate_job = { workspace = true }
+wasmtime-wasi =  { workspace = true }
+wasmtime-wasi-http = { workspace = true, features = ["component-model-async"] }

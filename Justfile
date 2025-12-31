@@ -2,10 +2,7 @@ default:
     @echo "No default task defined."
     just --list
 
-build-example-simple:
-    cd ./examples/simple && cargo b --release --target wasm32-unknown-unknown
-    cp ./target/wasm32-unknown-unknown/release/simple.wasm ./simple.wasm
-
-build-example-complex:
-    cd ./examples/complex && cargo b --release --target wasm32-unknown-unknown
-    cp ./target/wasm32-unknown-unknown/release/complex.wasm ./complex.wasm
+build-example-http:
+    rm ./http.wasm || true
+    cd ./examples/http && cargo +nightly build --release --target wasm32-wasip2
+    mv ./target/wasm32-wasip2/release/http.wasm ./http.wasm
