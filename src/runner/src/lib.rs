@@ -7,7 +7,7 @@ use wasmtime_wasi_http::{WasiHttpCtx, WasiHttpView};
 
 /// Fully qualified name of the handler function in the WASM module.
 /// Format: `<package>/<interface>#<function>`
-const HANDLER_FUNC_FQN: &str = "mate:runtime@0.1.0/api#handler";
+const HANDLER_FUNC_FQN: &str = "handler";
 
 pub struct ComponentRunStates {
     pub wasi_ctx: WasiCtx,
@@ -71,7 +71,9 @@ impl WasmRunner {
         let func = instance
             .get_typed_func::<(String,), (Result<String, String>,)>(&mut store, HANDLER_FUNC_FQN)
             .context(format!("Function '{HANDLER_FUNC_FQN}' not found"))?;
-        let (_output,) = func.call_async(&mut store, (json,)).await?;
+        let (output,) = func.call_async(&mut store, (json,)).await?;
+
+        println!("{:?}", output);
 
         Ok(Value::Null)
     }

@@ -91,21 +91,15 @@ pub fn mate_handler(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 inline: r"
                     package mate:runtime@0.1.0;
 
-                    interface api {
-                        handler: async func(data: string) -> result<string, string>;
-                    }
-
                     world mate {
-                        import api;
-                        export api;
+                        export handler: async func(data: string) -> result<string, string>;
                     }",
             });
         }
 
-        struct Component;
+        struct Mate;
 
-        impl bindings::exports::mate::runtime::api::Guest for Component {
-            #[unsafe(no_mangle)]
+        impl bindings::Guest for Mate {
             async fn handler(data: String) -> Result<String, String> {
                 use std::io::{self, Read, Write};
 
@@ -125,7 +119,7 @@ pub fn mate_handler(_attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         }
 
-        bindings::export!(Component with_types_in bindings);
+        bindings::export!(Mate with_types_in bindings);
 
         #(#fn_attrs)*
         #fn_vis #fn_sig {
