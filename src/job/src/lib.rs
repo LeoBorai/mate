@@ -101,12 +101,7 @@ pub fn mate_handler(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
         impl bindings::Guest for Mate {
             async fn handler(data: String) -> Result<String, String> {
-                use std::io::{self, Read, Write};
-
-                let mut buff = String::new();
-                io::stdin().read_to_string(&mut buff).map_err(|e| format!("Failed to read input: {}", e))?;
-
-                let input: #input_type = serde_json::from_str(&buff)
+                let input: #input_type = serde_json::from_str(&data)
                     .map_err(|e| format!("Failed to deserialize input: {}", e))?;
 
                 let result: Result<#output_type> = #fn_name(input).await;

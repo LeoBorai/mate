@@ -5,8 +5,6 @@ use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 use wasmtime_wasi_http::{WasiHttpCtx, WasiHttpView};
 
-/// Fully qualified name of the handler function in the WASM module.
-/// Format: `<package>/<interface>#<function>`
 const HANDLER_FUNC_FQN: &str = "handler";
 
 pub struct ComponentRunStates {
