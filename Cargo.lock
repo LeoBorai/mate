@@ -780,6 +780,7 @@ dependencies = [
  "mate_job",
  "serde",
  "serde_json",
+ "tokio",
  "wit-bindgen 0.50.0",
  "wstd",
 ]

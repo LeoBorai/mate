@@ -10,6 +10,7 @@ crate-type = ["cdylib"]
 anyhow = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+tokio = { workspace = true }
 wit-bindgen = { workspace = true }
 wstd = { workspace = true }
 
