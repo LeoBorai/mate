@@ -1,5 +1,5 @@
 [workspace]
-members = ["./src/*", "./examples/*"]
+members = ["./src/*", "./jobs/*"]
 default-members = ["src/mate"]
 resolver = "3"
 
@@ -7,8 +7,9 @@ resolver = "3"
 authors = ["Leo Borai <estebanborai@gmail.com>"]
 version = "0.0.0"
 edition = "2024"
-description = ""
-documentation = ""
+categories = ["web-programming"]
+description = "🦀🧡🧉"
+documentation = "https://docs.rs/mate"
 
 [workspace.dependencies]
 anyhow = "1.0"
