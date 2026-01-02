@@ -80,6 +80,7 @@ jobs:
           cargo build --target --release ${{ matrix.target }}
 
       - name: Build binary
+        if: ${{ matrix.target != 'aarch64-unknown-linux-gnu' }}
         run: cargo build --release
 
       - name: Package binary
