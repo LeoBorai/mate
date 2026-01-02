@@ -53,16 +53,6 @@ jobs:
       - name: Setup Rust Cache
         uses: Swatinem/rust-cache@v2
 
-      - name: Build for ARM64 Linux GNU
-        if: ${{ matrix.target == 'aarch64-unknown-linux-gnu' }}
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
-          cargo build --target --release ${{ matrix.target }}
-
-      - name: Build binary
-        run: cargo build --release
-
       - name: Setup Cargo Binstall
         uses: cargo-bins/cargo-binstall@main
 
@@ -81,6 +71,16 @@ jobs:
           else
             echo "CRATE_VERSION=$(cargo tag --no-tag --no-commit -p=v prerelease pre.$GIT_COMMIT_SHA7)" >> $GITHUB_ENV
           fi
+
+      - name: Build for ARM64 Linux GNU
+        if: ${{ matrix.target == 'aarch64-unknown-linux-gnu' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          cargo build --target --release ${{ matrix.target }}
+
+      - name: Build binary
+        run: cargo build --release
 
       - name: Package binary
         run: |
