@@ -78,8 +78,13 @@ jobs:
             echo "CRATE_VERSION=$(cargo tag --no-tag --no-commit -p=v prerelease pre.$GIT_COMMIT_SHA7)" >> $GITHUB_ENV
           fi
 
-      - name: Build binary
+      - name: Build binary specifying target
+        if: ${{ matrix.target == 'aarch64-unknown-linux-gnu' }}
         run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Build binary
+        if: ${{ matrix.target != 'aarch64-unknown-linux-gnu' }}
+        run: cargo build --release
 
       - name: Package binary
         run: |
