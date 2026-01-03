@@ -1,5 +1,6 @@
 mod cmd;
 
+use anyhow::Result;
 use clap::Parser;
 
 use self::cmd::Cmd;
@@ -16,9 +17,7 @@ pub struct Cli {
 }
 
 impl Cli {
-    pub async fn exec(&self) -> anyhow::Result<()> {
-        match &self.cmd {
-            Cmd::Task(task_cmd) => task_cmd.exec().await,
-        }
+    pub async fn exec(&self) -> Result<()> {
+        self.cmd.exec().await
     }
 }

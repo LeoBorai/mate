@@ -8,6 +8,6 @@ use crate::cli::Cli;
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    cli.cmd.exec().await?;
+    cli.exec().await?;
     Ok(())
 }
