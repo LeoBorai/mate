@@ -14,4 +14,4 @@ tokio = { workspace = true }
 wit-bindgen = { workspace = true }
 wstd = { workspace = true }
 
-mate_job = { workspace = true }
+mate_task = { workspace = true }

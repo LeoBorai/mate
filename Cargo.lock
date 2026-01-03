@@ -777,7 +777,7 @@ name = "http"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "mate_job",
+ "mate_task",
  "serde",
  "serde_json",
  "tokio",
@@ -1176,18 +1176,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mate_job"
-version = "0.0.0-pre.a666fa3"
-dependencies = [
- "proc-macro2",
- "quote",
- "serde",
- "serde_json",
- "syn",
- "wit-bindgen 0.50.0",
-]
-
-[[package]]
 name = "mate_runner"
 version = "0.0.0-pre.a666fa3"
 dependencies = [
@@ -1197,6 +1185,18 @@ dependencies = [
  "wasmtime",
  "wasmtime-wasi",
  "wasmtime-wasi-http",
+]
+
+[[package]]
+name = "mate_task"
+version = "0.0.0-pre.a666fa3"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "serde",
+ "serde_json",
+ "syn",
+ "wit-bindgen 0.50.0",
 ]
 
 [[package]]

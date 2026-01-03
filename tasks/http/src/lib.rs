@@ -1,7 +1,7 @@
 use serde_json::Value;
 use wstd::http::{Body, BodyExt, Client, Method, Request};
 
-use mate_job::{mate_handler, mate_object};
+use mate_task::{mate_handler, mate_object};
 
 #[mate_object]
 struct Config {
