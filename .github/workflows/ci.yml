@@ -5,6 +5,10 @@ on:
     branches:
       - main
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   cq:
     name: Codebase Quality
@@ -48,7 +52,7 @@ jobs:
           - task: fibonacci
             args: "10"
           - task: http
-            args: "{\"api_url\":\"https://httpbin.org/post\",\"data\":{\"sample_key\":\"sample_value\"}}"
+            args: '{"api_url":"https://httpbin.org/post","data":{"sample_key":"sample_value"}}'
           - task: sum
             args: "[1, 2, 3, 4, 5]"
     runs-on: ubuntu-latest
