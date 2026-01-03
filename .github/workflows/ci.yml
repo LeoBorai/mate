@@ -25,6 +25,29 @@ jobs:
       - name: Run Tests
         run: cargo test --all-features
 
+  ti:
+    name: Tasks Integrity
+    strategy:
+      matrix:
+        include:
+          - task: http
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: nightly-2025-12-19
+          targets: wasm32-wasip2
+
+      - name: Setup Just
+        uses: extractions/setup-just@v3
+
+      - name: Build Wasm Task
+        run: just build-task ${{ matrix.task }}
+
   build-binaries:
     name: Build binaries
     strategy:
