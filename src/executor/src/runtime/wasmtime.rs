@@ -68,10 +68,13 @@ impl WasmtimeRuntime {
         let func = instance
             .get_typed_func::<(String,), (Result<String, String>,)>(&mut store, HANDLER_FUNC_FQN)
             .context(format!("Function '{HANDLER_FUNC_FQN}' not found"))?;
-        let (output,) = func.call_async(&mut store, (json,)).await?;
+        let (result,) = func.call_async(&mut store, (json,)).await?;
 
-        println!("{:?}", output);
-
-        Ok(Value::Null)
+        match result {
+            Ok(success) => {
+                serde_json::from_str(&success).context("Failed to parse successful output JSON")
+            }
+            Err(failure) => Err(anyhow::anyhow!("WASM module execution failed: {}", failure)),
+        }
     }
 }
