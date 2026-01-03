@@ -1,5 +1,5 @@
 [workspace]
-members = ["./src/*", "./jobs/*"]
+members = ["./src/*", "./tasks/*"]
 default-members = ["src/mate"]
 resolver = "3"
 
