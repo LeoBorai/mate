@@ -873,7 +873,7 @@ name = "http"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "mate_task",
+ "mate",
  "serde",
  "serde_json",
  "tokio",
@@ -1274,9 +1274,13 @@ dependencies = [
  "bytes",
  "clap",
  "mate_executor",
+ "proc-macro2",
+ "quote",
  "serde",
  "serde_json",
+ "syn",
  "tokio",
+ "wit-bindgen 0.50.0",
 ]
 
 [[package]]
@@ -1292,18 +1296,6 @@ dependencies = [
  "wasmtime",
  "wasmtime-wasi",
  "wasmtime-wasi-http",
-]
-
-[[package]]
-name = "mate_task"
-version = "0.0.0-pre.fc91cfd"
-dependencies = [
- "proc-macro2",
- "quote",
- "serde",
- "serde_json",
- "syn",
- "wit-bindgen 0.50.0",
 ]
 
 [[package]]
