@@ -30,7 +30,9 @@ jobs:
     strategy:
       matrix:
         include:
+          - task: fibonacci
           - task: http
+          - task: sum
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
