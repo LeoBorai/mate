@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use bytes::Bytes;
 use serde_json::Value;
 use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::{Config, Engine, Store};
@@ -32,16 +33,14 @@ impl WasiHttpView for ComponentRunStates {
     }
 }
 
-pub struct WasmRunner {
-    wasm_module: Vec<u8>,
-}
+pub struct WasmtimeRuntime {}
 
-impl WasmRunner {
-    pub fn new(wasm_module: Vec<u8>) -> Self {
-        Self { wasm_module }
+impl WasmtimeRuntime {
+    pub fn new() -> Self {
+        Self {}
     }
 
-    pub async fn execute(self, input: Vec<u8> /* Bytes? */) -> Result<Value> {
+    pub async fn execute(self, wasm_module: Bytes, input: Bytes) -> Result<Value> {
         let mut config = Config::new();
         config
             .async_support(true)
@@ -64,7 +63,7 @@ impl WasmRunner {
             http_ctx: WasiHttpCtx::new(),
         };
         let mut store = Store::new(&engine, state);
-        let component = Component::from_binary(&engine, &self.wasm_module)?;
+        let component = Component::from_binary(&engine, &wasm_module)?;
         let instance = linker.instantiate_async(&mut store, &component).await?;
         let func = instance
             .get_typed_func::<(String,), (Result<String, String>,)>(&mut store, HANDLER_FUNC_FQN)

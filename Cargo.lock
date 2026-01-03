@@ -1166,22 +1166,25 @@ dependencies = [
 
 [[package]]
 name = "mate"
-version = "0.0.0-pre.21b77ae"
+version = "0.0.0-pre.a666fa3"
 dependencies = [
  "anyhow",
- "mate_runner",
+ "bytes",
+ "mate_executor",
  "serde",
  "serde_json",
  "tokio",
 ]
 
 [[package]]
-name = "mate_runner"
-version = "0.0.0-pre.21b77ae"
+name = "mate_executor"
+version = "0.0.0-pre.a666fa3"
 dependencies = [
  "anyhow",
+ "bytes",
  "serde",
  "serde_json",
+ "tokio",
  "wasmtime",
  "wasmtime-wasi",
  "wasmtime-wasi-http",
@@ -1189,7 +1192,7 @@ dependencies = [
 
 [[package]]
 name = "mate_task"
-version = "0.0.0-pre.21b77ae"
+version = "0.0.0-pre.a666fa3"
 dependencies = [
  "proc-macro2",
  "quote",

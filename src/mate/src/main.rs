@@ -1,15 +1,15 @@
 use std::{fs::read, path::Path};
 
 use anyhow::Result;
-
-use mate_runner::WasmRunner;
 use serde_json::Value;
+
+use mate_executor::Executor;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let wasm = Path::new("http.wasm");
     let wasm = read(wasm)?;
-    let runner = WasmRunner::new(wasm);
+    let executor = Executor::new();
     let input = r#"{
         "api_url": "https://httpbin.org/post",
         "data": {
@@ -17,7 +17,7 @@ async fn main() -> Result<()> {
         }
     }"#;
 
-    let output: Value = runner.execute(input.as_bytes().to_vec()).await?;
+    let output: Value = executor.run(wasm.into(), input.as_bytes().into()).await?;
 
     println!("📤 Output:");
     println!("{:#?}\n", output);
