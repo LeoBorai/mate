@@ -1166,7 +1166,7 @@ dependencies = [
 
 [[package]]
 name = "mate"
-version = "0.0.0-pre.a666fa3"
+version = "0.0.0-pre.21b77ae"
 dependencies = [
  "anyhow",
  "mate_runner",
@@ -1177,7 +1177,7 @@ dependencies = [
 
 [[package]]
 name = "mate_runner"
-version = "0.0.0-pre.a666fa3"
+version = "0.0.0-pre.21b77ae"
 dependencies = [
  "anyhow",
  "serde",
@@ -1189,7 +1189,7 @@ dependencies = [
 
 [[package]]
 name = "mate_task"
-version = "0.0.0-pre.a666fa3"
+version = "0.0.0-pre.21b77ae"
 dependencies = [
  "proc-macro2",
  "quote",
