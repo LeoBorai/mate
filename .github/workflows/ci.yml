@@ -38,6 +38,7 @@ jobs:
 
   ti:
     name: Tasks Integrity
+    needs: cq
     strategy:
       matrix:
         include:
