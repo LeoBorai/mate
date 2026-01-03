@@ -28,6 +28,12 @@ jobs:
       - name: Build binary
         run: cargo build
 
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mate
+          path: ./target/debug/mate
+
   ti:
     name: Tasks Integrity
     strategy:
