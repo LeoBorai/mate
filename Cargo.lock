@@ -646,6 +646,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "fibonacci"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "mate_task",
+ "serde",
+ "serde_json",
+ "wit-bindgen 0.50.0",
+]
+
+[[package]]
 name = "find-msvc-tools"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -876,7 +887,6 @@ dependencies = [
  "mate_task",
  "serde",
  "serde_json",
- "tokio",
  "wit-bindgen 0.50.0",
  "wstd",
 ]
@@ -1825,6 +1835,17 @@ name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
+
+[[package]]
+name = "sum"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "mate_task",
+ "serde",
+ "serde_json",
+ "wit-bindgen 0.50.0",
+]
 
 [[package]]
 name = "syn"
