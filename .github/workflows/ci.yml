@@ -16,6 +16,9 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@v2
+
       - name: Run Formatter Check
         run: cargo fmt --all -- --check
 
@@ -58,6 +61,9 @@ jobs:
         with:
           toolchain: nightly
 
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@v2
+
       - name: Install Target on Toolchain
         run: rustup target add wasm32-wasip2 --toolchain nightly
 
@@ -67,8 +73,10 @@ jobs:
       - name: Build Wasm Task
         run: just build-task ${{ matrix.task }}
 
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
+      - name: Download Binary
+        uses: actions/download-artifact@v7
+        with:
+          name: mate
 
       - name: Run Task
         run: |
