@@ -77,10 +77,11 @@ jobs:
         uses: actions/download-artifact@v7
         with:
           name: mate
+          path: ./bin
 
       - name: Run Task
         run: |
-          ./mate task run \
+          ./bin/mate task run \
             --source ./${{ matrix.task }}.wasm \
             --args '${{ matrix.args }}'
 
