@@ -85,6 +85,7 @@ jobs:
 
       - name: Run Task
         run: |
+          chmod +x ./bin/mate
           ./bin/mate task run \
             --source ./${{ matrix.task }}.wasm \
             --args '${{ matrix.args }}'
