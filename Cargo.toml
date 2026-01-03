@@ -13,6 +13,7 @@ documentation = "https://docs.rs/mate"
 
 [workspace.dependencies]
 anyhow = "1.0"
+bytes = "1.11"
 log = "0.4"
 proc-macro2 = "1.0"
 serde = { version = "1.0", features = ["derive"] }
@@ -26,5 +27,5 @@ wasmtime-wasi-http = "40"
 wit-bindgen = "0.50"
 wstd = "0.6"
 
-mate_runner = { path = "./src/runner" }
+mate_executor = { path = "./src/executor" }
 mate_task = { path = "./src/task" }

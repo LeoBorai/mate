@@ -1169,19 +1169,22 @@ name = "mate"
 version = "0.0.0-pre.21b77ae"
 dependencies = [
  "anyhow",
- "mate_runner",
+ "bytes",
+ "mate_executor",
  "serde",
  "serde_json",
  "tokio",
 ]
 
 [[package]]
-name = "mate_runner"
+name = "mate_executor"
 version = "0.0.0-pre.21b77ae"
 dependencies = [
  "anyhow",
+ "bytes",
  "serde",
  "serde_json",
+ "tokio",
  "wasmtime",
  "wasmtime-wasi",
  "wasmtime-wasi-http",
