@@ -5,6 +5,10 @@ on:
     branches:
       - main
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   cq:
     name: Codebase Quality
@@ -16,6 +20,9 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@v2
+
       - name: Run Formatter Check
         run: cargo fmt --all -- --check
 
@@ -25,12 +32,29 @@ jobs:
       - name: Run Tests
         run: cargo test --all-features
 
+      - name: Build binary
+        run: |
+          cargo build
+          chmod +x ./target/debug/mate
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mate
+          path: ./target/debug/mate
+
   ti:
     name: Tasks Integrity
+    needs: cq
     strategy:
       matrix:
         include:
+          - task: fibonacci
+            args: "10"
           - task: http
+            args: '{"api_url":"https://httpbin.org/post","data":{"sample_key":"sample_value"}}'
+          - task: sum
+            args: "[1, 2, 3, 4, 5]"
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -41,6 +65,9 @@ jobs:
         with:
           toolchain: nightly
 
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@v2
+
       - name: Install Target on Toolchain
         run: rustup target add wasm32-wasip2 --toolchain nightly
 
@@ -49,6 +76,19 @@ jobs:
 
       - name: Build Wasm Task
         run: just build-task ${{ matrix.task }}
+
+      - name: Download Binary
+        uses: actions/download-artifact@v7
+        with:
+          name: mate
+          path: ./bin
+
+      - name: Run Task
+        run: |
+          chmod +x ./bin/mate
+          ./bin/mate task run \
+            --source ./${{ matrix.task }}.wasm \
+            --args '${{ matrix.args }}'
 
   build-binaries:
     name: Build binaries
