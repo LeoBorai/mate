@@ -1,0 +1,15 @@
+[package]
+name = "mate-tool-fs"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dunce = { workspace = true }
+ignore = { workspace = true }
+mate-tool-api = { workspace = true }
+rig = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

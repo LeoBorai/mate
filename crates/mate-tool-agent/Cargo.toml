@@ -1,0 +1,10 @@
+[package]
+name = "mate-tool-agent"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+mate-tool-api = { workspace = true }
+rig = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }

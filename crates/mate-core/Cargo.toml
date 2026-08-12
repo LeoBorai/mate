@@ -1,0 +1,19 @@
+[package]
+name = "mate-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+futures = { workspace = true }
+mate-tool-agent = { workspace = true }
+mate-tool-api = { workspace = true }
+mate-tool-fs = { workspace = true }
+mate-tool-http = { workspace = true }
+rig = { workspace = true, features = ["reqwest", "rustls"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+slotmap = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+tracing = { workspace = true }
