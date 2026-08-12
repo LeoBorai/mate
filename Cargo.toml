@@ -1,6 +1,46 @@
-[package]
-name = "mate"
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 
-[dependencies]
+[workspace.dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.6", features = ["derive"] }
+crossterm = "0.29.0"
+dunce = "1.0.5"
+figment = { version = "0.10.19", features = ["toml", "env"] }
+futures = "0.3.34"
+governor = "0.10.4"
+hickory-resolver = "0.26.1"
+html2text = "0.17.1"
+ignore = "0.4.33"
+insta = "1.48.0"
+ipnet = "2.12.1"
+ratatui = "0.30.2"
+readability = "0.3.0"
+reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "gzip"] }
+rig = { version = "0.41.0", default-features = false, features = ["derive"] }
+schemars = "1.2.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+slotmap = "1.1.1"
+tempfile = "3.27.0"
+thiserror = "2.0.20"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "sync", "fs"] }
+tokio-stream = "0.1.19"
+toml = "1.1.4"
+tracing = "0.1.44"
+tracing-appender = "0.2.5"
+tui-textarea = "0.7.0"
+url = "2.5.8"
+wiremock = "0.6.5"
+
+mate-core = { path = "crates/mate-core" }
+mate-tool-agent = { path = "crates/mate-tool-agent" }
+mate-tool-api = { path = "crates/mate-tool-api" }
+mate-tool-fs = { path = "crates/mate-tool-fs" }
+mate-tool-http = { path = "crates/mate-tool-http" }
+mate-tui = { path = "crates/mate-tui" }

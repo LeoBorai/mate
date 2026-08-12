@@ -1,0 +1,15 @@
+[package]
+name = "mate-tui"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+crossterm = { workspace = true }
+mate-core = { workspace = true }
+ratatui = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tui-textarea = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }

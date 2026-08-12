@@ -20,3 +20,7 @@ fmt:
 # Runs tests
 test:
     cargo nextest run
+
+# Checks licences and security advisories
+deny:
+    cargo deny check

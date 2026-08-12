@@ -1,0 +1,21 @@
+[package]
+name = "mate-tool-http"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+governor = { workspace = true }
+hickory-resolver = { workspace = true }
+html2text = { workspace = true }
+ipnet = { workspace = true }
+mate-tool-api = { workspace = true }
+readability = { workspace = true }
+reqwest = { workspace = true }
+rig = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+tokio = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+wiremock = { workspace = true }
