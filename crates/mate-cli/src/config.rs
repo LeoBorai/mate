@@ -1,4 +1,4 @@
-//! Layered config loading (§10 of `plan.md`): flags → env → `./.mate.toml` →
+//! Layered config loading (§10): flags → env → `./.mate.toml` →
 //! `~/.config/mate/config.toml` → defaults, via `figment`.
 //!
 //! `API_TOKEN` is deliberately not a field on `Config` — it is read from the environment only,
