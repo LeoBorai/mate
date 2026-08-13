@@ -2,3 +2,5 @@
 //! session manager (one Tokio task per session, one tab each), and drives the
 //! subagent runtime — depth/concurrency/turn limits, cancellation, and the
 //! `SessionEvent` stream that both the transcript and the side panel read from.
+
+pub mod config;
