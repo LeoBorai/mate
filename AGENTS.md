@@ -58,6 +58,25 @@ one sets the key. Don't add it to `Config` — that reopens the leak this ticket
 in `mate-cli/src/config.rs`. `Jail::create_file` does **not** create parent directories —
 `std::fs::create_dir_all` first for any nested path (e.g. `.config/mate/config.toml`).
 
+### M0-4 · Tracing setup (§11, done)
+
+`tracing-subscriber` (`env-filter` feature) + `tracing-appender` in `mate-cli/src/logging.rs`.
+`logging::init()` is called first thing in `main()`, before `Cli::parse()` / `config::load()`,
+and returns a `WorkerGuard` that must stay alive for the process lifetime (the writer is
+non-blocking; dropping the guard early loses buffered lines).
+
+Log file: `$XDG_STATE_HOME/mate/mate.log`, falling back to `~/.local/state/mate/mate.log`
+(mirrors the `XDG_CONFIG_HOME` pattern already used in `mate-cli/src/config.rs`). Level from
+`RUST_LOG`, default `info`. Writer is the file only — never stdout/stderr, in either `--plain`
+or TUI mode.
+
+`SessionId` / `AgentId` don't exist until the session manager (§5, M6); once they do, spans
+opened anywhere in `mate-core` should carry them as fields, per the plan's ordering note #1
+(§11) about adding enum/span keys early rather than retrofitting later.
+
+Covered by `crates/mate-cli/tests/tracing_stdout.rs` (spawns the built binary, asserts empty
+stdout and a populated log file) and unit tests in `logging.rs` for state-dir resolution.
+
 ### Testing conventions (§12)
 
 - Tools tested over `tempfile::TempDir` (`mate-tool-fs`) and `wiremock` (`mate-tool-http`).

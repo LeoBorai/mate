@@ -4,13 +4,16 @@
 
 mod cli;
 mod config;
+mod logging;
 
 use clap::Parser;
 
 fn main() -> anyhow::Result<()> {
+    let _log_guard = logging::init()?;
+
     let args = cli::Cli::parse();
     let config = config::load(&args)?;
     tracing::debug!(model = %config.model, has_api_token = config::api_token().is_some(), "config loaded");
-    println!("mate");
+    tracing::info!("mate started");
     Ok(())
 }

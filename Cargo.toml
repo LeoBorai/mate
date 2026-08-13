@@ -34,6 +34,7 @@ tokio-stream = "0.1.19"
 toml = "1.1.4"
 tracing = "0.1.44"
 tracing-appender = "0.2.5"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 tui-textarea = "0.7.0"
 url = "2.5.8"
 wiremock = "0.6.5"
