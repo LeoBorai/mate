@@ -1,4 +1,4 @@
-//! Tracing setup (M0-4, §11 of `plan.md`): file-only logging to
+//! Tracing setup (M0-4, §11): file-only logging to
 //! `$XDG_STATE_HOME/mate/mate.log` (or `~/.local/state/mate/mate.log`), level gated by
 //! `RUST_LOG` (default `info`). Never writes to stdout/stderr — the TUI owns the terminal,
 //! and `--plain` output must stay script-clean.

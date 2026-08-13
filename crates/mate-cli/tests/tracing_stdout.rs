@@ -1,4 +1,4 @@
-//! M0-4 acceptance (§11, §15 of `plan.md`): a run produces zero stdout bytes — all tracing
+//! M0-4 acceptance (§11, §15): a run produces zero stdout bytes — all tracing
 //! output lands in `mate.log`, never the terminal.
 
 use std::process::Command;

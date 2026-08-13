@@ -1,4 +1,4 @@
-//! CLI surface used to override config (§10 of `plan.md`). The full frontend-selection
+//! CLI surface used to override config (§10). The full frontend-selection
 //! behavior (`--plain`, `--print`, signal handling, …) lands with `M5-1`; this subset exists
 //! so config loading has real flags to layer on top of env/files/defaults.
 

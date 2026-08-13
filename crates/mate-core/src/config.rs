@@ -1,5 +1,5 @@
 //! Config-shaped domain types shared between `mate-cli`'s loader and the agent/session
-//! builders that will consume them (§4, §5.1, §10 of `plan.md`). `DelegationPolicy` and
+//! builders that will consume them (§4, §5.1, §10). `DelegationPolicy` and
 //! `HttpPolicy` are deserialized straight out of TOML tables; `AgentSpec` and `SessionSpec`
 //! are assembled from a loaded `Config` plus per-invocation data (workspace root, title).
 

@@ -7,7 +7,15 @@
 as reference for what CI runs, but do not execute them yourself. If verification is needed,
 ask the user to run it or rely on CI.
 
-## Project context (from `plan.md`)
+**Never reference `plan.md`, or any other planning doc supplied out-of-band, from code, doc
+comments, commit messages, or committed docs (`AGENTS.md`, `CONTRIBUTING.md`, etc.).** Such
+files are working input, not part of the repo (`plan.md` is `.gitignore`d) — anyone without
+the original loses the referent, and the pointer rots the moment a section renumbers. Milestone
+tags (`M0-5`) and `§N` section numbers are fine as an internal, self-contained convention, since
+this doc defines them itself; "per the plan", "`plan.md`", or any wording that implies a reader
+needs an external doc to make sense of a comment is not.
+
+## Project context
 
 `mate` — Rust CLI coding agent built on Rig + HuggingFace.
 
@@ -71,11 +79,29 @@ Log file: `$XDG_STATE_HOME/mate/mate.log`, falling back to `~/.local/state/mate/
 or TUI mode.
 
 `SessionId` / `AgentId` don't exist until the session manager (§5, M6); once they do, spans
-opened anywhere in `mate-core` should carry them as fields, per the plan's ordering note #1
-(§11) about adding enum/span keys early rather than retrofitting later.
+opened anywhere in `mate-core` should carry them as fields — add enum/span keys early rather
+than retrofitting later (§11).
 
 Covered by `crates/mate-cli/tests/tracing_stdout.rs` (spawns the built binary, asserts empty
 stdout and a populated log file) and unit tests in `logging.rs` for state-dir resolution.
+
+### M0-5 · Error strategy (§16, done)
+
+Three layers, documented in full in `CONTRIBUTING.md`:
+
+- Libraries (`mate-core`, `mate-tool-*`, `mate-tui`) return `thiserror` enums, never
+  `anyhow::Error` — callers need a matchable type. Tool crates converge on `ToolFailure`
+  (`M3-1`, not yet landed) which is deliberately non-fatal: fed back to the model as a tool
+  result, not a turn abort.
+- `mate-cli` plumbing (`config.rs`, `logging.rs`) stays `anyhow::Result` with
+  `.context(...)` — the binary edge, human-readable trail over a matchable type.
+- `mate-cli/src/error.rs` has `MateError`, the one error type at the CLI boundary.
+  `main.rs`'s `run()` maps each fallible call to a variant (`logging::init().map_err(MateError::Io)?`,
+  `config::load(&args).map_err(MateError::Config)?`); `main()` prints the error plus its
+  `source()` chain and converts `MateError::exit_code()` to the process `ExitCode`. Codes:
+  `Config` = 2, `Io` = 3, `Other` = 1, success = 0. `Auth`/`Provider` (codes 4/5, kept free) get
+  added as variants once `M1-5`/`M5-4` give them a real producer, not before — an unconstructed
+  variant is dead code under `clippy -D warnings`.
 
 ### Testing conventions (§12)
 
