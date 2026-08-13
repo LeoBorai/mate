@@ -207,6 +207,7 @@ mod tests {
             jail.clear_env();
             let home = jail.directory().display().to_string();
             jail.set_env("HOME", home);
+            std::fs::create_dir_all(jail.directory().join(".config/mate")).unwrap();
             jail.create_file(
                 ".config/mate/config.toml",
                 r#"
@@ -228,6 +229,7 @@ mod tests {
             jail.clear_env();
             let home = jail.directory().display().to_string();
             jail.set_env("HOME", home);
+            std::fs::create_dir_all(jail.directory().join(".config/mate")).unwrap();
             jail.create_file(
                 ".config/mate/config.toml",
                 r#"
