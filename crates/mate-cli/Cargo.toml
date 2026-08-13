@@ -13,7 +13,11 @@ clap = { workspace = true }
 figment = { workspace = true }
 mate-core = { workspace = true }
 mate-tui = { workspace = true }
+serde = { workspace = true }
 tokio = { workspace = true }
 toml = { workspace = true }
 tracing = { workspace = true }
 tracing-appender = { workspace = true }
+
+[dev-dependencies]
+figment = { workspace = true, features = ["test"] }

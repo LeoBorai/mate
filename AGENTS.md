@@ -43,6 +43,21 @@ Infra ticket. Pipeline must run:
 **Done when:** green on a PR; fails on an introduced warning. Depends on `M0-1 · Workspace
 scaffold`.
 
+### M0-3 · Config loading (§10, done)
+
+`figment` layering in `mate-cli/src/config.rs`: flags → env (`MATE_*`) → `./.mate.toml` (or
+`--config`) → `~/.config/mate/config.toml` → defaults. `Config`, `ToolsConfig`, `PanelConfig`,
+`PricingEntry` live there; `DelegationPolicy`, `HttpPolicy`, `HttpAccessPolicy`, `AgentSpec`,
+`SessionSpec` live in `mate-core/src/config.rs` (shared shape, per §4/§5.1/§7.4).
+
+**`API_TOKEN`** (the API-provider token — HuggingFace or otherwise) is env-only: read via
+`config::api_token()`, never a `Config` field, never round-trips through a config file even if
+one sets the key. Don't add it to `Config` — that reopens the leak this ticket closed.
+
+`figment::Jail` (dev-dependency, `test` feature) drives the precedence tests, one per layer,
+in `mate-cli/src/config.rs`. `Jail::create_file` does **not** create parent directories —
+`std::fs::create_dir_all` first for any nested path (e.g. `.config/mate/config.toml`).
+
 ### Testing conventions (§12)
 
 - Tools tested over `tempfile::TempDir` (`mate-tool-fs`) and `wiremock` (`mate-tool-http`).
@@ -57,3 +72,5 @@ scaffold`.
 - `Justfile` — `fmt`, `test`, `deny` recipes already defined.
 - `deny.toml` — licence allowlist and advisory ignores already configured.
 - `rust-toolchain.toml` — pins toolchain + components (`rustfmt`, `clippy`).
+- `mate-cli/src/config.rs` + `mate-core/src/config.rs` — config loading (M0-3, above). Extend,
+  don't reimplement.

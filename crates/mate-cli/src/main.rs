@@ -2,14 +2,15 @@
 //! user file → defaults), and picks a frontend — the tabbed TUI by default, or
 //! `--plain` for a single-session stdout mode.
 
-fn main() {
-    println!("mate");
-}
+mod cli;
+mod config;
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn dummy() {
-        assert_eq!(2 + 2, 4);
-    }
+use clap::Parser;
+
+fn main() -> anyhow::Result<()> {
+    let args = cli::Cli::parse();
+    let config = config::load(&args)?;
+    tracing::debug!(model = %config.model, has_api_token = config::api_token().is_some(), "config loaded");
+    println!("mate");
+    Ok(())
 }
