@@ -9,7 +9,7 @@ mate-tool-agent = { workspace = true }
 mate-tool-api = { workspace = true }
 mate-tool-fs = { workspace = true }
 mate-tool-http = { workspace = true }
-rig = { workspace = true, features = ["reqwest", "rustls"] }
+rig = { workspace = true, features = ["reqwest", "rustls", "agent"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 slotmap = { workspace = true }
