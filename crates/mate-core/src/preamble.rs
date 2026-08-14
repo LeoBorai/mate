@@ -1,0 +1,175 @@
+//! `render_preamble` (§4, `M1-4`): turns a workspace root, host OS, and an agent's tool list
+//! into the system preamble that ends up in [`crate::config::AgentSpec::preamble`].
+//! `build_agent` (`M1-2`) just forwards whatever preamble the spec carries — this is the
+//! function that produces it.
+//!
+//! Two variants, not two functions: [`PreambleRole`] picks the intro paragraph, but the
+//! workspace/OS/tool-list scaffolding is identical, since a subagent's `ToolCtx` is the same
+//! shape as a root agent's, just narrower (§7.4). The subagent variant carries the §7.6
+//! context-firewall reminder and the §7.5 "summarize, don't dump" instruction — the two things
+//! that go wrong first when a model is delegated to instead of talked to directly.
+//!
+//! Tool crates land in `M4`, so [`ToolDescriptor`] is a plain data pair rather than anything
+//! tied to `rig::tool::Tool` — a caller today can pass an empty slice or a hand-built list, and
+//! `M4` wiring later derives the real list from each agent's attached `ToolSet`.
+
+use std::path::Path;
+
+/// One tool available to the agent, as shown in the preamble's tool list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolDescriptor {
+    pub name: String,
+    pub description: String,
+}
+
+impl ToolDescriptor {
+    pub fn new(name: impl Into<String>, description: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            description: description.into(),
+        }
+    }
+}
+
+/// Which kind of agent the preamble is for (§4: "the same builder makes root agents and
+/// subagents"). Changes the intro paragraph, not the workspace/OS/tool-list scaffolding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreambleRole {
+    Root,
+    Subagent,
+}
+
+impl PreambleRole {
+    fn intro(self) -> &'static str {
+        match self {
+            PreambleRole::Root => "You are mate, a terminal coding agent.",
+            PreambleRole::Subagent => {
+                "You are a subordinate agent spawned by mate to complete one narrow task.\n\
+                 You do not see the parent conversation and never will: your entire input is \
+                 this preamble plus the task you were given. Do not ask for missing context, \
+                 and do not wait for clarification; use the tools you have to complete the \
+                 task as given.\n\
+                 Your final answer becomes the whole report the parent agent receives. Keep \
+                 it short: summarize what you found or did, and do not paste raw file \
+                 contents or tool output verbatim."
+            }
+        }
+    }
+}
+
+/// Renders the system preamble for `role`, given the session's workspace root, the host OS,
+/// and the tools this particular agent has attached.
+pub fn render_preamble(
+    role: PreambleRole,
+    workspace_root: &Path,
+    os: &str,
+    tools: &[ToolDescriptor],
+) -> String {
+    let scaffold = format!(
+        "Workspace root: {}\nOperating system: {os}",
+        workspace_root.display()
+    );
+
+    let tool_list = if tools.is_empty() {
+        "Available tools:\n(none)".to_string()
+    } else {
+        let lines: Vec<String> = tools
+            .iter()
+            .map(|t| format!("- {}: {}", t.name, t.description))
+            .collect();
+        format!("Available tools:\n{}", lines.join("\n"))
+    };
+
+    [role.intro(), scaffold.as_str(), tool_list.as_str()].join("\n\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_tools() -> Vec<ToolDescriptor> {
+        vec![
+            ToolDescriptor::new(
+                "read_file",
+                "Read a file within the workspace, optionally by line range.",
+            ),
+            ToolDescriptor::new(
+                "list_dir",
+                "List one level of a directory, .gitignore-aware.",
+            ),
+        ]
+    }
+
+    /// Pins the exact rendered output (`M1-4`'s "snapshot test"): a golden string literal
+    /// rather than `insta`, so a wording change is a visible one-line diff in this file
+    /// instead of a separate `.snap` file to keep in sync.
+    #[test]
+    fn root_preamble_snapshot() {
+        let rendered = render_preamble(
+            PreambleRole::Root,
+            Path::new("/work/api"),
+            "linux",
+            &sample_tools(),
+        );
+
+        assert_eq!(
+            rendered,
+            "You are mate, a terminal coding agent.\n\n\
+             Workspace root: /work/api\n\
+             Operating system: linux\n\n\
+             Available tools:\n\
+             - read_file: Read a file within the workspace, optionally by line range.\n\
+             - list_dir: List one level of a directory, .gitignore-aware."
+        );
+    }
+
+    #[test]
+    fn subagent_preamble_snapshot() {
+        let tools = vec![ToolDescriptor::new(
+            "read_file",
+            "Read a file within the workspace.",
+        )];
+        let rendered = render_preamble(
+            PreambleRole::Subagent,
+            Path::new("/work/api"),
+            "linux",
+            &tools,
+        );
+
+        assert_eq!(
+            rendered,
+            "You are a subordinate agent spawned by mate to complete one narrow task.\n\
+             You do not see the parent conversation and never will: your entire input is \
+             this preamble plus the task you were given. Do not ask for missing context, \
+             and do not wait for clarification; use the tools you have to complete the \
+             task as given.\n\
+             Your final answer becomes the whole report the parent agent receives. Keep \
+             it short: summarize what you found or did, and do not paste raw file \
+             contents or tool output verbatim.\n\n\
+             Workspace root: /work/api\n\
+             Operating system: linux\n\n\
+             Available tools:\n\
+             - read_file: Read a file within the workspace."
+        );
+    }
+
+    #[test]
+    fn empty_tool_list_renders_a_placeholder_instead_of_an_empty_section() {
+        let rendered = render_preamble(PreambleRole::Root, Path::new("/work/api"), "linux", &[]);
+        assert!(rendered.ends_with("Available tools:\n(none)"));
+    }
+
+    #[test]
+    fn root_and_subagent_intros_differ_for_the_same_workspace_and_tools() {
+        let tools = sample_tools();
+        let root = render_preamble(PreambleRole::Root, Path::new("/work/api"), "linux", &tools);
+        let subagent = render_preamble(
+            PreambleRole::Subagent,
+            Path::new("/work/api"),
+            "linux",
+            &tools,
+        );
+        assert_ne!(root, subagent);
+        assert!(subagent.contains("You do not see the parent conversation"));
+    }
+}
