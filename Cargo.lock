@@ -4774,6 +4774,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tracing",
+ "wiremock",
 ]
 
 [[package]]
