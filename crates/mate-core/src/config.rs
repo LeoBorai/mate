@@ -73,6 +73,10 @@ pub struct AgentSpec {
     pub model: String,
     pub sub_provider: Option<String>,
     pub base_url: Option<String>,
+    /// System preamble handed to the agent as-is. `M1-4` layers templating
+    /// (workspace root, OS, rendered tool list) on top by producing this string —
+    /// `build_agent` itself just forwards whatever preamble the spec carries.
+    pub preamble: String,
     pub temperature: f64,
     pub max_tokens: u64,
     pub http: HttpPolicy,
