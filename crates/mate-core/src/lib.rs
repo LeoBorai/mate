@@ -3,4 +3,5 @@
 //! subagent runtime — depth/concurrency/turn limits, cancellation, and the
 //! `SessionEvent` stream that both the transcript and the side panel read from.
 
+pub mod backend;
 pub mod config;

@@ -103,6 +103,26 @@ Three layers, documented in full in `CONTRIBUTING.md`:
   added as variants once `M1-5`/`M5-4` give them a real producer, not before — an unconstructed
   variant is dead code under `clippy -D warnings`.
 
+### M1-1 · Backend and HF client (§4, done)
+
+`mate-core/src/backend.rs`: `Backend` wraps Rig's HuggingFace `Client` (`rig::providers::huggingface`,
+itself a `client::Client<Ext, H>` instantiation — the generic client machinery Rig ships, of
+which HuggingFace is one `Ext`). `Backend::new(api_key, sub_provider)` takes the token as a
+value, never reads the environment itself; `mate-cli::config::api_token()` stays the one place
+`API_TOKEN` is read. `sub_provider` is a free-text `Option<&str>` mapped to Rig's `SubProvider`
+enum (`together`, `fireworks`, `sambanova`, `hyperbolic`, `nebius`, `novita`, else
+`Custom`/`hf-inference`) — an unrecognized name falls back to `hf-inference` rather than
+erroring, since the partner list moves independently of `mate`.
+
+`Backend` is named and shaped for `base_url` override + the OpenAI-compatible fallback
+(`M1-3`) to slot in later without a rename; that generic provider-selection path is that
+ticket's job, not this one's.
+
+**✓** `crates/mate-core/tests/hf_backend.rs` — `#[ignore]`d, needs a real `API_TOKEN`; calls
+Rig's `VerifyClient::verify()` against the live router. Offline unit tests in `backend.rs`
+cover `sub_provider` name mapping and client construction (construction alone never hits the
+network — only `.verify()` does).
+
 ### Testing conventions (§12)
 
 - Tools tested over `tempfile::TempDir` (`mate-tool-fs`) and `wiremock` (`mate-tool-http`).
