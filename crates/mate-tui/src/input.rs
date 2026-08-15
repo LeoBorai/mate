@@ -228,8 +228,9 @@ mod tests {
         // restores that saved draft.
         input.on_key(key(KeyCode::Up, KeyModifiers::NONE));
         assert_eq!(input.textarea().lines(), ["sent"]);
+        // Cursor lands at the start of the recalled text, so `!` inserts before it.
         input.on_key(char_key('!'));
-        assert_eq!(input.textarea().lines(), ["sent!"]);
+        assert_eq!(input.textarea().lines(), ["!sent"]);
         input.on_key(key(KeyCode::Down, KeyModifiers::NONE));
         assert!(input.is_empty());
     }
