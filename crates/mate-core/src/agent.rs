@@ -13,15 +13,39 @@
 
 use rig::agent::Agent;
 use rig::client::AgentClientExt;
+use rig::completion::Message;
 use rig::providers::{huggingface, openai};
+use tokio_util::sync::CancellationToken;
 
 use crate::backend::Backend;
 use crate::config::AgentSpec;
+use crate::streaming::{self, AgentEventEnvelope, TurnOutcome};
 
 /// A built agent — one variant per provider path a [`Backend`] can take (§4, `M1-3`).
 pub enum BuiltAgent {
     HuggingFace(Agent<huggingface::completion::CompletionModel>),
     OpenAiCompatible(Agent<openai::completion::CompletionModel>),
+}
+
+impl BuiltAgent {
+    /// Streams one prompt against whichever provider path this agent was built against (`M2`).
+    /// See [`streaming::stream_turn`] for the event mapping and cancellation semantics — this
+    /// just resolves the match `build_agent` already had to make.
+    pub async fn stream_turn(
+        &self,
+        prompt: impl Into<Message> + Send,
+        cancel: &CancellationToken,
+        on_event: impl FnMut(AgentEventEnvelope),
+    ) -> TurnOutcome {
+        match self {
+            BuiltAgent::HuggingFace(agent) => {
+                streaming::stream_turn(agent, prompt, cancel, on_event).await
+            }
+            BuiltAgent::OpenAiCompatible(agent) => {
+                streaming::stream_turn(agent, prompt, cancel, on_event).await
+            }
+        }
+    }
 }
 
 /// Builds a Rig agent against `backend`'s client, configured per `spec`.

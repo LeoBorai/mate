@@ -33,12 +33,14 @@ tempfile = "3.27.0"
 thiserror = "2.0.20"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "sync", "fs"] }
 tokio-stream = "0.1.19"
+tokio-util = "0.7.19"
 toml = "1.1.4"
 tracing = "0.1.44"
 tracing-appender = "0.2.5"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 tui-textarea = "0.7.0"
 url = "2.5.8"
+uuid = { version = "1.24.0", features = ["v4"] }
 wiremock = "0.6.5"
 
 mate-core = { path = "crates/mate-core" }
