@@ -4772,6 +4772,7 @@ dependencies = [
  "serde",
  "serde_json",
  "slotmap",
+ "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "tokio-stream",

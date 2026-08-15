@@ -23,4 +23,6 @@ tracing = { workspace = true }
 ulid = { workspace = true }
 
 [dev-dependencies]
+rig = { workspace = true, features = ["test-utils"] }
+tempfile = { workspace = true }
 wiremock = { workspace = true }
