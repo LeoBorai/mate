@@ -3,6 +3,8 @@
 //! confirms a prompt actually round-trips through the OpenAI-shaped `/chat/completions` wire
 //! format rather than just constructing without error.
 
+mod support;
+
 use mate_core::agent::{BuiltAgent, build_agent};
 use mate_core::backend::Backend;
 use mate_core::config::{AgentSpec, DelegationPolicy, HttpPolicy};
@@ -18,6 +20,7 @@ fn stub_agent_spec() -> AgentSpec {
         preamble: "you are a test agent".to_string(),
         temperature: 0.0,
         max_tokens: 64,
+        max_turns: 4,
         http: HttpPolicy::default(),
         may_delegate: false,
         delegation: DelegationPolicy::default(),
@@ -44,8 +47,13 @@ async fn openai_compatible_fallback_round_trips_through_a_stub_server() {
 
     let backend = Backend::openai_compatible("dummy-key", server.uri())
         .expect("failed to build the OpenAI-compatible client");
+    let tmp = tempfile::tempdir().unwrap();
 
-    let agent = match build_agent(&backend, &stub_agent_spec()) {
+    let agent = match build_agent(
+        &backend,
+        &stub_agent_spec(),
+        support::tool_ctx(tmp.path().to_path_buf()),
+    ) {
         BuiltAgent::OpenAiCompatible(agent) => agent,
         BuiltAgent::HuggingFace(_) => panic!("expected the OpenAiCompatible variant"),
     };
@@ -56,4 +64,34 @@ async fn openai_compatible_fallback_round_trips_through_a_stub_server() {
         .expect("prompt against the stub server failed");
 
     assert_eq!(reply, "pong from stub");
+}
+
+/// `M4-2`'s "tools attached" half, exercised through the real `build_agent` path rather than
+/// `build_toolset` directly (that's `tests/tool_round_trip.rs`'s job): no network call needed —
+/// `tool_definitions` reads the local registry `build_agent` populated at construction time.
+#[tokio::test]
+async fn build_agent_attaches_the_fs_toolset() {
+    let backend = Backend::openai_compatible("dummy-key", "http://127.0.0.1:0")
+        .expect("failed to build the OpenAI-compatible client");
+    let tmp = tempfile::tempdir().unwrap();
+
+    let agent = match build_agent(
+        &backend,
+        &stub_agent_spec(),
+        support::tool_ctx(tmp.path().to_path_buf()),
+    ) {
+        BuiltAgent::OpenAiCompatible(agent) => agent,
+        BuiltAgent::HuggingFace(_) => panic!("expected the OpenAiCompatible variant"),
+    };
+
+    let mut names: Vec<String> = agent
+        .tool_definitions(None)
+        .await
+        .expect("tool_definitions should resolve without any network call")
+        .into_iter()
+        .map(|def| def.name)
+        .collect();
+    names.sort();
+
+    assert_eq!(names, vec!["find_files", "list_dir", "read_file"]);
 }

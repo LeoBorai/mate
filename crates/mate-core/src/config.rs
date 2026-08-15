@@ -79,6 +79,10 @@ pub struct AgentSpec {
     pub preamble: String,
     pub temperature: f64,
     pub max_tokens: u64,
+    /// Total model-call budget for a turn from this agent, including the initial call and
+    /// every tool-driven continuation (`M4-2`'s `default_max_turns`). A tool call followed by
+    /// a model-authored final answer needs at least two.
+    pub max_turns: usize,
     pub http: HttpPolicy,
     pub may_delegate: bool,
     pub delegation: DelegationPolicy,
