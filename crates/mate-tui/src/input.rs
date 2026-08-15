@@ -223,13 +223,15 @@ mod tests {
         }
         input.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
 
-        for c in "draft".chars() {
-            input.on_key(char_key(c));
-        }
+        // `Up` only starts recalling from an empty box, so the draft it saves here is the empty
+        // box itself. Editing the recalled entry, then paging past the newest with `Down`,
+        // restores that saved draft.
         input.on_key(key(KeyCode::Up, KeyModifiers::NONE));
         assert_eq!(input.textarea().lines(), ["sent"]);
+        input.on_key(char_key('!'));
+        assert_eq!(input.textarea().lines(), ["sent!"]);
         input.on_key(key(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(input.textarea().lines(), ["draft"]);
+        assert!(input.is_empty());
     }
 
     #[test]
