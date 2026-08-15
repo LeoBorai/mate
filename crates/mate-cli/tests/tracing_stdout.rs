@@ -11,6 +11,11 @@ fn run_produces_no_stdout_and_logs_to_file() {
     let output = Command::new(exe)
         .env("HOME", home.path())
         .env_remove("XDG_STATE_HOME")
+        // A bare invocation with no args now routes to the TUI frontend (`M7`) rather than a
+        // hardcoded stub error — force it to fail fast on the missing token, before it ever
+        // touches the network or the terminal, so this test stays deterministic regardless of
+        // whether the ambient environment happens to export a real token.
+        .env_remove("API_TOKEN")
         .env("RUST_LOG", "trace")
         .output()
         .expect("failed to run mate");
