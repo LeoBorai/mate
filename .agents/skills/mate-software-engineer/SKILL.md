@@ -77,3 +77,30 @@ resolver `3`.
   a live-network test run unattended or in CI.
 - Extend existing config/logging/error modules rather than adding a second
   mechanism that does the same job.
+
+## Ratatui / TUI notes (`mate-tui`, `M7`+)
+
+- **Use `ratatui-textarea`, not `tui-textarea`.** `tui-textarea` 0.7.0 hard-pins `ratatui` 0.29
+  internally (its `Widget` impl targets that version's trait) and can't render into this
+  workspace's `ratatui` 0.30 `Frame` — confirmed by reading its source, not by trial and error.
+  `ratatui-textarea` (the `ratatui`-org continuation) tracks current `ratatui-core`/
+  `ratatui-widgets` and is the one in `workspace.dependencies`.
+- Translate `crossterm::event::KeyEvent` into `ratatui_textarea::Input` field by field
+  (`key`/`ctrl`/`alt`/`shift`, all public) instead of enabling that crate's own `crossterm`
+  feature — avoids ever needing its bundled crossterm version to line up with the workspace's.
+- A bare generic type in a fn signature (`&mut Frame`, `&View`) triggers Rust's "elided
+  lifetime in path" behavior silently rather than erroring — write `Frame<'_>` / `View<'_>`
+  explicitly so it isn't ambiguous to the next reader.
+- Rule 1 ("never run `cargo`") is about *me* invoking it. A `rust-analyzer` flycheck process
+  can be running in the sandbox independently — `target/flycheck0/{stdout,stderr}` (stdout is
+  `--message-format=json`, filter for `reason: "compiler-message"`) is real compiler ground
+  truth and safe to *read*; it just isn't safe to *trigger*. Don't poll it in a sleep loop —
+  check once, and treat a stale timestamp as "no new information," not as a compile failure.
+- Hand-writing an `insta` `.snap` file (since `cargo insta accept` also needs `cargo`): front
+  matter is `source: <path relative to the workspace root>` + `expression: <macro arg as
+  typed>`, `---`, then the raw `Display` output. `assertion_line` appears in a *pending*
+  snapshot's terminal summary but is stripped before persistence — don't include it.
+  `TestBackend`'s `Display` wraps every row in literal `"..."` and pads to the buffer width;
+  copy failing-test output verbatim rather than retyping it, and verify row length
+  programmatically (`len()` per row) since trailing spaces are significant and easy to drop by
+  hand.
