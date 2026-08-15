@@ -42,7 +42,7 @@ edition 2024, workspace resolver `3`.
 
 | Crate | State |
 |---|---|
-| `mate-cli` | Args (`cli.rs`), layered config (`config.rs`), tracing setup (`logging.rs`), `MateError` boundary (`error.rs`) all in place. |
+| `mate-cli` | Args (`cli.rs`), layered config (`config.rs`), tracing setup (`logging.rs`), `MateError` boundary (`error.rs`), and the plain frontend (`plain.rs` — `--plain`/`--print`, SIGINT cancellation) all in place. The tabbed TUI (`M7`) is not started, so any other invocation shape errors out. |
 | `mate-core` | `Backend` (HF native + OpenAI-compatible fallback), `build_agent`/`BuiltAgent`, preamble rendering, provider error mapping + retry, and the streaming/event layer (`streaming.rs`) are in place. Session manager and subagent runtime are not started. |
 | `mate-tool-api` | `ToolCtx` (path jail via `resolve`), `ToolFailure`, `ToolActivity`/`FileOp`/`ActivitySink`, `SubagentSpawner` + request/report types, `AgentId` (moved here from `mate-core` so `ToolCtx` can carry it without inverting the dependency graph), and the `number_lines`/`truncate_with_notice`/`enforce_max_size`/`refuse_binary` helpers are in place. |
 | `mate-tool-fs` | `read_file`, `list_dir`, `find_files` (`rig::tool::PortableTool` impls) are in place. |

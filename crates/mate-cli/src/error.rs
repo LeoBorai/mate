@@ -7,9 +7,9 @@
 //! `.map_err(...)`, right where it knows what failed.
 
 /// Exit-code-bearing error at the CLI boundary. One variant per category `main` can act on
-/// distinctly. `Auth` and `Provider` (per `M1-5`/`M5-4`) land as variants once those tickets
-/// give them a real producer — an unconstructed variant is dead code and `-D warnings` fails
-/// the build, so the enum only grows as failure modes actually exist.
+/// distinctly. `Auth` (missing `API_TOKEN`, or a provider auth rejection classified by
+/// `ProviderError::classify`) and `Provider` (every other provider-request failure) are
+/// produced by the plain frontend's startup and turn-running paths (`M5-4`).
 #[derive(Debug, thiserror::Error)]
 pub enum MateError {
     #[error("config error: {0}")]
@@ -17,6 +17,12 @@ pub enum MateError {
 
     #[error("io error: {0}")]
     Io(#[source] anyhow::Error),
+
+    #[error("authentication error: {0}")]
+    Auth(#[source] anyhow::Error),
+
+    #[error("provider error: {0}")]
+    Provider(#[source] anyhow::Error),
 
     #[error(transparent)]
     Other(#[from] anyhow::Error),
@@ -29,6 +35,8 @@ impl MateError {
         match self {
             MateError::Config(_) => 2,
             MateError::Io(_) => 3,
+            MateError::Auth(_) => 4,
+            MateError::Provider(_) => 5,
             MateError::Other(_) => 1,
         }
     }
@@ -43,6 +51,8 @@ mod tests {
         let codes = [
             MateError::Config(anyhow::anyhow!("x")).exit_code(),
             MateError::Io(anyhow::anyhow!("x")).exit_code(),
+            MateError::Auth(anyhow::anyhow!("x")).exit_code(),
+            MateError::Provider(anyhow::anyhow!("x")).exit_code(),
             MateError::Other(anyhow::anyhow!("x")).exit_code(),
         ];
         assert!(codes.iter().all(|c| *c != 0));
