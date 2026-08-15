@@ -7,3 +7,4 @@ pub mod agent;
 pub mod backend;
 pub mod config;
 pub mod preamble;
+pub mod provider_error;

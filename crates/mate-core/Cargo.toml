@@ -4,7 +4,9 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+fastrand = { workspace = true }
 futures = { workspace = true }
+http = { workspace = true }
 mate-tool-agent = { workspace = true }
 mate-tool-api = { workspace = true }
 mate-tool-fs = { workspace = true }
