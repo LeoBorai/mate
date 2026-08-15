@@ -16,16 +16,56 @@ one auth setup). Two provider paths, config-selected:
   `hf-inference` rather than erroring**, since the partner list moves
   independently of `mate`. `base_url` overrides the router (a dedicated
   Inference Endpoint, or a local server speaking HF's wire format).
+
+  Rig 0.41.0's `SubProvider` only actually affects the outgoing chat-
+  completions request for `Fireworks` (it rewrites the model id to
+  Fireworks' native `accounts/fireworks/models/…` form) — every other
+  partner is otherwise silently ignored: the request URL is always
+  `v1/chat/completions` and the model id is passed through unqualified,
+  so HF's router auto-selects a provider instead of honoring the one
+  `mate` chose, and 404s if auto-selection can't resolve the model.
+  `Backend::qualify_model(model)` works around this by appending
+  `:<partner-slug>` (HF's documented `model:provider` pinning syntax)
+  itself before the model id reaches Rig — `build_agent` calls it rather
+  than passing `spec.model` straight through. It's a no-op for the default
+  `hf-inference` partner, for `Fireworks` (already qualified by Rig), for
+  an already-qualified model id, and whenever `base_url` overrides the
+  router (a dedicated endpoint has no partner to select).
 - `Backend::openai_compatible(api_key, base_url)` — the escape hatch. Point
   `base_url` at `HF_ROUTER_OPENAI_BASE_URL` (`https://router.huggingface.co/v1`)
   to reach HF's OpenAI-compatible surface if Rig's native HF provider ever
   lags a router change, or at an arbitrary OpenAI-compatible server (local
   TGI/vLLM).
 
-`Backend::verify()` calls Rig's `VerifyClient::verify()` — the only method
-that touches the network; construction alone never does. The one test that
-hits the live router (`crates/mate-core/tests/hf_backend.rs`) is `#[ignore]`d
-and needs a real `API_TOKEN` — never run it in CI.
+`Backend::verify()` is the only method that touches the network; construction
+alone never does. For `OpenAiCompatible`, and for `HuggingFace` with a
+`base_url` override, it's exactly Rig's `VerifyClient::verify()` — a caller
+that overrode `base_url` gets taken at their word about what's listening
+there.
+
+For `HuggingFace` on the **default** router path, it does *not* call Rig's
+`verify()`. That built-in call sends `GET {base_url}/api/whoami-v2`, and
+`/api/whoami-v2` is a Hub account-info route — it lives on `huggingface.co`,
+not `router.huggingface.co` (the router only proxies inference endpoints:
+chat completions, etc.). So `client.verify()` 404s unconditionally on the
+default path, before a single agent gets built, regardless of model,
+sub-provider, or token validity — this was the actual cause of a "404 Not
+Found" that reproduced no matter what model or sub-provider was configured.
+`verify_huggingface_hub_token` sidesteps it by hitting
+`https://huggingface.co/api/whoami-v2` directly, over its own
+`reqwest::Client` (`hub_verify_client`, `Authorization` header pre-set at
+construction — Rig's `huggingface::Client` never exposes the bearer token it
+holds internally, so a check against a *different* host needs its own
+client). It still returns Rig's own `VerifyError` variants
+(`InvalidAuthentication`, `HttpError`), so `ProviderError::classify` and
+everything downstream is unaffected.
+
+The one test that hits the live network (`crates/mate-core/tests/hf_backend.rs`)
+is `#[ignore]`d and needs a real `API_TOKEN` — never run it in CI.
+`crates/mate-core/tests/provider_error_mapping.rs` covers the status-code
+classification offline instead, against a `base_url`-overridden backend (a
+wiremock server) — that's exactly the path that still goes through
+`client.verify()` unchanged.
 
 `API_TOKEN` is taken as a value by `Backend`'s constructors, never read from
 the environment inside `mate-core` — see `config.md`.
