@@ -19,12 +19,37 @@
 use mate_tool_api::ToolCtx;
 use rig::tool::server::{ToolServer, ToolServerHandle};
 
+use crate::preamble::ToolDescriptor;
+
 pub fn build_toolset(ctx: ToolCtx) -> ToolServerHandle {
     ToolServer::new()
         .tool(mate_tool_fs::ReadFile::new(ctx.clone()))
         .tool(mate_tool_fs::ListDir::new(ctx.clone()))
         .tool(mate_tool_fs::FindFiles::new(ctx))
         .run()
+}
+
+/// Descriptors for the tools [`build_toolset`] always attaches, for preamble rendering (§4,
+/// `M1-4`) until the promised "derive from the real `ToolSet`" wiring lands — kept next to
+/// `build_toolset` so the two lists can't drift apart.
+pub fn tool_descriptors() -> Vec<ToolDescriptor> {
+    vec![
+        ToolDescriptor::new(
+            "read_file",
+            "Read a file inside the workspace. Output is line-numbered. Use start_line/end_line \
+             to read a slice of a large file instead of the whole thing.",
+        ),
+        ToolDescriptor::new(
+            "list_dir",
+            "List one level of a directory inside the workspace. Respects .gitignore. \
+             Directory entries are suffixed with '/'.",
+        ),
+        ToolDescriptor::new(
+            "find_files",
+            "Find files under the workspace root matching a glob pattern, e.g. \"**/*.rs\". \
+             Respects .gitignore.",
+        ),
+    ]
 }
 
 #[cfg(test)]
@@ -58,6 +83,14 @@ mod tests {
             .collect();
         names.sort();
 
+        assert_eq!(names, vec!["find_files", "list_dir", "read_file"]);
+    }
+
+    #[test]
+    fn tool_descriptors_names_match_the_attached_toolset() {
+        let descriptors = tool_descriptors();
+        let mut names: Vec<&str> = descriptors.iter().map(|t| t.name.as_str()).collect();
+        names.sort();
         assert_eq!(names, vec!["find_files", "list_dir", "read_file"]);
     }
 }
