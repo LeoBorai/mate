@@ -9,9 +9,13 @@
 //!
 //! [`AgentId`] and [`AgentEventEnvelope`] land now rather than at `M6` (§11 note 1): adding a
 //! routing key to an event type after the fact means touching every match arm downstream, so
-//! it's in from the first event this crate ever emits. `SessionId` doesn't exist yet — that's
-//! `M6`'s session manager — so the envelope here is deliberately just `{ agent, event }`; `M6`
-//! adds `session: SessionId` on top of it rather than inventing a new shape.
+//! it's in from the first event this crate ever emits. The envelope here stays deliberately
+//! just `{ agent, event }` — `crate::session::SessionEvent` (`M6`) wraps it with `session:
+//! SessionId` on top rather than this module inventing a new shape of its own.
+//!
+//! `stream_turn_with_history` (`M6-2`) threads a session's conversation history into the
+//! request, for `crate::session`'s session task. `stream_turn` stays as it was for `M5`'s
+//! plain frontend — see its own doc comment for why the two aren't unified into one.
 //!
 //! `AgentId` and `SubagentOutcome` are defined in `mate-tool-api`, not here (`M3`) — `M3`'s
 //! `ToolCtx` and `ToolActivity` need to carry an `AgentId` too, and `mate-tool-api` can never
@@ -27,7 +31,8 @@ use rig::agent::{Agent, MultiTurnStreamItem, StreamingError};
 use rig::completion::{CompletionModel, GetTokenUsage, Message, Usage};
 use rig::message::ToolResultContent;
 use rig::streaming::{
-    StreamedAssistantContent, StreamedUserContent, StreamingPrompt, ToolCallDeltaContent,
+    StreamedAssistantContent, StreamedUserContent, StreamingChat, StreamingPrompt,
+    ToolCallDeltaContent,
 };
 use tokio_util::sync::CancellationToken;
 use ulid::Ulid;
@@ -154,6 +159,13 @@ impl UsageRollup {
 /// Runs one streamed prompt against `agent` end to end (`M2-1`): drives `stream_prompt`'s
 /// `MultiTurnStreamItem` stream, maps each item to zero or one [`AgentEvent`] via `on_event`,
 /// and returns once the stream ends, is cancelled, or errors.
+///
+/// Deliberately *not* [`stream_turn_with_history`] called with an empty slice: Rig's
+/// `stream_chat`/`.history(...)` sets the request's chat history to `Some(vec![])`, which its
+/// own docs say bypasses the agent's conversation memory — a different thing from
+/// `stream_prompt`'s `None`, which leaves that memory in play. `M5`'s plain frontend already
+/// depends on this exact path; changing it out from under it here to save a few lines isn't
+/// this milestone's call to make.
 pub async fn stream_turn<M>(
     agent: &Agent<M>,
     prompt: impl Into<Message> + Send,
@@ -165,6 +177,24 @@ where
     M::StreamingResponse: GetTokenUsage,
 {
     let mut stream = agent.stream_prompt(prompt).await;
+    drive(&mut stream, cancel, on_event).await
+}
+
+/// Runs one streamed prompt with prior conversation `history` threaded in (`M6-2`: the
+/// session task owns history across turns, unlike `M5`'s one-shot plain frontend). Otherwise
+/// identical to [`stream_turn`] — same event mapping, same cancellation semantics.
+pub async fn stream_turn_with_history<M>(
+    agent: &Agent<M>,
+    prompt: impl Into<Message> + Send,
+    history: &[Message],
+    cancel: &CancellationToken,
+    on_event: impl FnMut(AgentEventEnvelope),
+) -> TurnOutcome
+where
+    M: CompletionModel + 'static,
+    M::StreamingResponse: GetTokenUsage,
+{
+    let mut stream = agent.stream_chat(prompt, history.to_vec()).await;
     drive(&mut stream, cancel, on_event).await
 }
 
@@ -333,6 +363,7 @@ mod tests {
 
     use rig::agent::{CompletionCall, PromptResponse};
     use rig::message::{Text, ToolCall, ToolFunction, ToolResult};
+    use rig::test_utils::{MockCompletionModel, MockStreamEvent};
     use tokio_stream::wrappers::ReceiverStream;
 
     fn text_item(text: &str) -> Result<MultiTurnStreamItem<()>, StreamingError> {
@@ -606,5 +637,37 @@ mod tests {
     #[test]
     fn agent_id_root_is_zero() {
         assert_eq!(AgentId::ROOT, AgentId(0));
+    }
+
+    #[tokio::test]
+    async fn stream_turn_sends_no_prior_history() {
+        let model = MockCompletionModel::from_stream_turns([vec![
+            MockStreamEvent::text("hi"),
+            MockStreamEvent::final_response_with_total_tokens(1),
+        ]]);
+        let agent = rig::agent::AgentBuilder::new(model.clone()).build();
+        let cancel = CancellationToken::new();
+
+        stream_turn(&agent, "hello", &cancel, |_| {}).await;
+
+        assert_eq!(model.requests()[0].chat_history.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn stream_turn_with_history_threads_prior_messages_into_the_request() {
+        let model = MockCompletionModel::from_stream_turns([vec![
+            MockStreamEvent::text("hi"),
+            MockStreamEvent::final_response_with_total_tokens(1),
+        ]]);
+        let agent = rig::agent::AgentBuilder::new(model.clone()).build();
+        let cancel = CancellationToken::new();
+        let history = vec![
+            Message::user("earlier question"),
+            Message::assistant("earlier answer"),
+        ];
+
+        stream_turn_with_history(&agent, "follow up", &history, &cancel, |_| {}).await;
+
+        assert_eq!(model.requests()[0].chat_history.len(), 3);
     }
 }
