@@ -1,4 +1,11 @@
-//! The Ratatui frontend: one tab per session, a per-tab transcript, and a
-//! per-tab left side panel (model, context/cost, subagent roster, network log,
-//! documents log). Subagent activity surfaces in the panel, never inline in the
-//! transcript.
+//! The Ratatui frontend (`M7`): the default frontend, one tab and no side panel yet — tabs
+//! land at `M8`, the panel at `M12`. A scrolling transcript over one session's `AgentEvent`
+//! stream, and a `ratatui-textarea` input box with mate's own `Enter`/`Alt+Enter` routing.
+
+mod app;
+mod input;
+mod transcript;
+mod ui;
+mod wrap;
+
+pub use app::{TuiError, run};

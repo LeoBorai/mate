@@ -22,7 +22,11 @@
 - **Streaming/event mapping** (`mate-core/src/streaming.rs`, landed): build
   synthetic `MultiTurnStreamItem` streams directly — see `streaming.md`'s
   testing section. No mock model needed for the event-mapping layer itself.
-- **TUI** (not yet landed): `ratatui::TestBackend` + `insta` snapshots.
+- **TUI** (`mate-tui`, `M7`): `ratatui::backend::TestBackend` + `insta` snapshots, driven
+  against `ui::View` directly — no session or terminal needed, since rendering only depends on
+  a `Transcript`/`WrapCache`/`InputBox` (see `ui.rs`'s `baseline_snapshot`). App-level routing
+  (key handling, session-event mapping) is tested without a terminal at all, in `app.rs`,
+  `transcript.rs`, `input.rs`, and `wrap.rs`.
 - **Config precedence** (landed): `figment::Jail`, one test per layer — see
   `config.md`.
 

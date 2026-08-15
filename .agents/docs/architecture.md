@@ -42,12 +42,12 @@ edition 2024, workspace resolver `3`.
 
 | Crate | State |
 |---|---|
-| `mate-cli` | Args (`cli.rs`), layered config (`config.rs`), tracing setup (`logging.rs`), `MateError` boundary (`error.rs`), and the plain frontend (`plain.rs` — `--plain`/`--print`, SIGINT cancellation) all in place. The tabbed TUI (`M7`) is not started, so any other invocation shape errors out. |
+| `mate-cli` | Args (`cli.rs`), layered config (`config.rs`), tracing setup (`logging.rs`), `MateError` boundary (`error.rs`), the plain frontend (`plain.rs` — `--plain`/`--print`, SIGINT cancellation), and the default frontend's wiring (`tui.rs` — spawns one session through `SessionManager` and hands it to `mate_tui::run`) are in place. |
 | `mate-core` | `Backend` (HF native + OpenAI-compatible fallback), `build_agent`/`BuiltAgent`, preamble rendering, provider error mapping + retry, the streaming/event layer (`streaming.rs`), and the session manager (`session.rs` — `SessionId`/`SessionEvent`, per-session Tokio task with threaded history, the shared bounded event channel, `Cancel`/`Shutdown` lifecycle, crash isolation) are in place. Subagent runtime is not started. |
 | `mate-tool-api` | `ToolCtx` (path jail via `resolve`), `ToolFailure`, `ToolActivity`/`FileOp`/`ActivitySink`, `SubagentSpawner` + request/report types, `AgentId` (moved here from `mate-core` so `ToolCtx` can carry it without inverting the dependency graph), and the `number_lines`/`truncate_with_notice`/`enforce_max_size`/`refuse_binary` helpers are in place. |
 | `mate-tool-fs` | `read_file`, `list_dir`, `find_files` (`rig::tool::PortableTool` impls) are in place. |
 | `mate-tool-http`, `mate-tool-agent` | Stub crates — no types yet. |
-| `mate-tui` | Stub crate — no types yet. |
+| `mate-tui` | `M7`: single-tab frontend — terminal lifecycle (`app.rs::run`, via `ratatui::try_init`/`restore`), the `select!` event loop, transcript model with capped scrollback (`transcript.rs`), a per-entry wrap cache (`wrap.rs`), and the `ratatui-textarea`-backed input box with `Enter`/`Alt+Enter`/history routing (`input.rs`). No tabs or side panel yet (`M8`/`M12`). Uses `ratatui-textarea`, not the `tui-textarea` crate plan.md names — that crate's `Widget` impl targets `ratatui` 0.29 and can't render into this workspace's `ratatui` 0.30. |
 
 For what each of those pieces actually does, see the other docs in this
 directory: `config.md`, `logging.md`, `error-handling.md`, `providers.md`,

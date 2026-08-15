@@ -1,12 +1,13 @@
 //! `mate` binary: parses args, layers config (flags → env → project file →
-//! user file → defaults), and picks a frontend — the tabbed TUI by default, or
-//! `--plain`/`--print` for the plain frontend `M5` actually ships.
+//! user file → defaults), and picks a frontend — the single-tab TUI by default (`M7`; tabs
+//! land at `M8`), or `--plain`/`--print` for the plain frontend `M5` ships.
 
 mod cli;
 mod config;
 mod error;
 mod logging;
 mod plain;
+mod tui;
 
 use std::io::IsTerminal;
 
@@ -41,9 +42,6 @@ async fn run() -> Result<(), MateError> {
     if plain::wants_plain(&args, stdout_is_tty) {
         plain::run(&args, &config).await
     } else {
-        Err(MateError::Other(anyhow::anyhow!(
-            "the default tabbed TUI isn't implemented yet (lands in M7) — \
-             pass --plain or -p/--print"
-        )))
+        tui::run(&args, &config).await
     }
 }

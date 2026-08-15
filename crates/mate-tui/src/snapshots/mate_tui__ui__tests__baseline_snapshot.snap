@@ -1,0 +1,18 @@
+---
+source: crates/mate-tui/src/ui.rs
+expression: terminal.backend()
+---
+"you ›   what does build_toolset do?                         "
+"agent › Let me check the source.                            "
+"✓       read_file ok                                        "
+"agent › It assembles the toolset for one agent.             "
+"                                                            "
+"                                                            "
+"                                                            "
+"                                                            "
+"                                                            "
+"                                                            "
+"                                                            "
+"┌ mate ────────────────────────────────────────────────────┐"
+"│ message the agent                                        │"
+"└──────────────────────────────────────────────────────────┘"

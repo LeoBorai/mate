@@ -29,8 +29,8 @@ use crate::error::MateError;
 
 /// Not exposed by `Config`/`Cli` yet (§10 lists neither as a knob) — fixed until a real need
 /// to tune them shows up.
-const DEFAULT_TEMPERATURE: f64 = 0.2;
-const DEFAULT_MAX_TOKENS: u64 = 4096;
+pub(crate) const DEFAULT_TEMPERATURE: f64 = 0.2;
+pub(crate) const DEFAULT_MAX_TOKENS: u64 = 4096;
 
 /// Whether `main` should route this invocation through the plain frontend: an explicit
 /// `--plain`/`--print`, or a prompt on a non-TTY stdout (`M5-3` — piping into another program
@@ -182,7 +182,7 @@ fn render_event(out: &mut impl Write, envelope: AgentEventEnvelope) {
     }
 }
 
-fn classify_verify_error(classified: ProviderError) -> MateError {
+pub(crate) fn classify_verify_error(classified: ProviderError) -> MateError {
     if classified == ProviderError::AuthFailed {
         MateError::Auth(anyhow::anyhow!(classified))
     } else {
@@ -190,7 +190,7 @@ fn classify_verify_error(classified: ProviderError) -> MateError {
     }
 }
 
-fn resolve_workspace_root(cli: &Cli) -> Result<PathBuf, MateError> {
+pub(crate) fn resolve_workspace_root(cli: &Cli) -> Result<PathBuf, MateError> {
     let root = cli
         .dir
         .first()
