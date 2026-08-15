@@ -8,6 +8,12 @@
 - **HTTP tool** (`mate-tool-http`, not yet landed): test over `wiremock` —
   redirect chains, oversized bodies, redirect loops, header stripping,
   DNS-rebinding-style cases.
+- **Session manager** (`mate-core/src/session.rs`, landed): drive
+  `session_task` directly against Rig's mock model and mock tools (e.g.
+  `MockControlledTool` for a genuine in-flight await point, a local panicking
+  `Tool` for crash isolation) — no `Backend`/network needed except the one
+  offline-construction test that exercises `SessionManager::spawn`'s
+  `max_sessions` cap.
 - **Subagent runtime** (not yet landed): test headless, against Rig's mock
   models — no TUI needed to exercise concurrency/cancellation bugs.
 - **Agent/provider behavior**: Rig ships mock models and VCR-style cassette

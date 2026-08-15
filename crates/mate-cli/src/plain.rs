@@ -4,9 +4,10 @@
 //! exits; `--plain` (without `--print`) starts an interactive loop that runs one turn per line
 //! read from stdin, seeded with the prompt argument if one was given.
 //!
-//! There's no session manager yet (`M6`), so this doesn't carry conversation history between
-//! turns — each line is an independent one-shot prompt against the same agent. History
-//! threading is the session task's job once it exists.
+//! This frontend doesn't route through `mate_core::session`'s session manager (`M6`), so it
+//! doesn't carry conversation history between turns — each line is an independent one-shot
+//! prompt against the same agent. History threading is the session task's job; wiring this
+//! frontend through it is future work, not part of `M6`'s own (core-only) scope.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
