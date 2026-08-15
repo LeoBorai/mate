@@ -4761,7 +4761,9 @@ dependencies = [
 name = "mate-core"
 version = "0.1.0"
 dependencies = [
+ "fastrand",
  "futures",
+ "http 1.5.0",
  "mate-tool-agent",
  "mate-tool-api",
  "mate-tool-fs",
