@@ -4795,24 +4795,35 @@ dependencies = [
 name = "mate-tool-api"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "async-trait",
+ "dunce",
+ "http 1.5.0",
  "rig",
  "schemars 1.2.2",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
 name = "mate-tool-fs"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "dunce",
  "ignore",
  "mate-tool-api",
  "rig",
  "schemars 1.2.2",
  "serde",
+ "serde_json",
  "tempfile",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]

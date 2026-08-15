@@ -1,4 +1,21 @@
-//! Shared contracts every `mate-tool-*` crate builds on: `ToolCtx` (workspace root,
-//! output caps, approval channel), the `ToolFailure` error type, and the
-//! `SubagentSpawner` trait — the seam that lets `mate-tool-agent` spawn agents
-//! without depending on `mate-core`, keeping the dependency graph one-directional.
+//! Shared contracts every `mate-tool-*` crate builds on: [`ToolCtx`] (workspace root,
+//! output caps, approval channel), the [`ToolFailure`] error type, and the
+//! [`SubagentSpawner`] trait — the seam that lets `mate-tool-agent` spawn agents without
+//! depending on `mate-core`, keeping the dependency graph one-directional.
+//!
+//! [`AgentId`] lives here rather than in `mate-core` for the same reason: [`ToolCtx`] and
+//! [`ToolActivity`] both need to carry it, and this crate can never depend on `mate-core`.
+
+mod activity;
+mod ctx;
+mod error;
+mod ids;
+mod subagent;
+
+pub use activity::{ActivitySink, FileOp, ToolActivity};
+pub use ctx::ToolCtx;
+pub use error::{ToolFailure, enforce_max_size, number_lines, refuse_binary, truncate_with_notice};
+pub use ids::AgentId;
+pub use subagent::{
+    SubagentOutcome, SubagentReport, SubagentRequest, SubagentSpawner, ToolProfile,
+};

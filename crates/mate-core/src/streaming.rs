@@ -12,10 +12,16 @@
 //! it's in from the first event this crate ever emits. `SessionId` doesn't exist yet — that's
 //! `M6`'s session manager — so the envelope here is deliberately just `{ agent, event }`; `M6`
 //! adds `session: SessionId` on top of it rather than inventing a new shape.
+//!
+//! `AgentId` and `SubagentOutcome` are defined in `mate-tool-api`, not here (`M3`) — `M3`'s
+//! `ToolCtx` and `ToolActivity` need to carry an `AgentId` too, and `mate-tool-api` can never
+//! depend on `mate-core` (§8.1 note 1), so the lower crate owns the type and this crate imports
+//! it rather than keeping a second definition in sync.
 
 use std::collections::HashMap;
 
 use futures::{Stream, StreamExt};
+use mate_tool_api::{AgentId, SubagentOutcome};
 use rig::OneOrMany;
 use rig::agent::{Agent, MultiTurnStreamItem, StreamingError};
 use rig::completion::{CompletionModel, GetTokenUsage, Message, Usage};
@@ -25,27 +31,6 @@ use rig::streaming::{
 };
 use tokio_util::sync::CancellationToken;
 use ulid::Ulid;
-
-/// Index of an agent within a session (§5.1). `0` is always the root agent; every other value
-/// is a subordinate spawned via `spawn_agent` (`M9`).
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct AgentId(pub u32);
-
-impl AgentId {
-    pub const ROOT: AgentId = AgentId(0);
-}
-
-/// How a subagent's run ended (§6.2's `SubagentReport::outcome`). Defined now, alongside
-/// [`AgentEvent::SubagentFinished`], even though nothing produces one until `M9` — the same
-/// reasoning as §9.3's `FileOp::Write`: an unused variant costs nothing, a rewritten public
-/// enum costs every downstream match arm.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SubagentOutcome {
-    Completed { summary: String },
-    Failed { reason: String },
-    Cancelled,
-    TimedOut,
-}
 
 /// One event produced by a running agent's turn (§5.2). The transcript renders `Token`,
 /// `ToolCallStarted`, `ToolResult`, `TurnComplete`, and `Error` for the root agent; the rest
