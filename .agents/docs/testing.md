@@ -2,9 +2,9 @@
 
 ## Per-area conventions
 
-- **Filesystem tools** (`mate-tool-fs`, not yet landed): test over
-  `tempfile::TempDir` — traversal, absolute paths, outward symlinks, oversized
-  files, binaries, denylisted names.
+- **Filesystem tools** (`mate-tool-fs`, `M3`): test over `tempfile::TempDir` —
+  traversal, absolute paths, outward symlinks, oversized files, binaries,
+  denylisted names.
 - **HTTP tool** (`mate-tool-http`, not yet landed): test over `wiremock` —
   redirect chains, oversized bodies, redirect loops, header stripping,
   DNS-rebinding-style cases.
