@@ -24,7 +24,7 @@ use rig::streaming::{
     StreamedAssistantContent, StreamedUserContent, StreamingPrompt, ToolCallDeltaContent,
 };
 use tokio_util::sync::CancellationToken;
-use uuid::Uuid;
+use ulid::Ulid;
 
 /// Index of an agent within a session (§5.1). `0` is always the root agent; every other value
 /// is a subordinate spawned via `spawn_agent` (`M9`).
@@ -62,7 +62,7 @@ pub enum AgentEvent {
         summary: String,
     },
     ApprovalRequired {
-        id: Uuid,
+        id: Ulid,
         name: String,
         detail: String,
     },
