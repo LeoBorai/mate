@@ -95,8 +95,67 @@ fn draw_body(f: &mut Frame<'_>, area: Rect, view: &mut View<'_>) {
     let [transcript_area, input_area] =
         Layout::vertical([Constraint::Min(0), Constraint::Length(input_height)]).areas(area);
 
-    render_transcript(f, transcript_area, view);
+    if view.transcript.is_empty() {
+        render_welcome(f, transcript_area);
+    } else {
+        render_transcript(f, transcript_area, view);
+    }
     render_input(f, input_area, view);
+}
+
+const RAINBOW: [Color; 6] = [
+    Color::Red,
+    Color::Yellow,
+    Color::Green,
+    Color::Cyan,
+    Color::Blue,
+    Color::Magenta,
+];
+
+const MATE_ART: [&str; 7] = [
+    "                                 .            ",
+    "                              .o8            ",
+    "ooo. .oo.  .oo.    .oooo.   .o888oo  .ooooo. ",
+    "`888P\"Y88bP\"Y88b  `P  )88b    888   d88' `88b",
+    " 888   888   888   .oP\"888    888   888ooo888",
+    " 888   888   888  d8(  888    888 . 888    .o",
+    "o888o o888o o888o `Y888\"\"8o   \"888\" `Y8bod8P'",
+];
+
+/// Welcome screen (startup, and any freshly `Ctrl+T`-spawned tab): a centered "mate" wordmark
+/// stands in for the transcript until [`Transcript::is_empty`] turns false, i.e. until the
+/// tab's first prompt is sent. Each column cycles through [`RAINBOW`] for the rainbow effect.
+fn render_welcome(f: &mut Frame<'_>, area: Rect) {
+    let width = MATE_ART
+        .iter()
+        .map(|row| row.chars().count())
+        .max()
+        .unwrap_or(0) as u16;
+    let height = MATE_ART.len() as u16;
+    let popup = centered_rect(width, height, area);
+
+    let lines: Vec<Line<'static>> = MATE_ART
+        .iter()
+        .map(|row| {
+            let spans: Vec<Span<'static>> = row
+                .chars()
+                .enumerate()
+                .map(|(i, c)| {
+                    if c == ' ' {
+                        Span::raw(" ")
+                    } else {
+                        Span::styled(
+                            c.to_string(),
+                            Style::default().fg(RAINBOW[i % RAINBOW.len()]),
+                        )
+                    }
+                })
+                .collect();
+            Line::from(spans)
+        })
+        .collect();
+
+    f.render_widget(Paragraph::new(lines), popup);
 }
 
 struct TabSegment {
