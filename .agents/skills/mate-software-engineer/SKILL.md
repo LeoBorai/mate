@@ -104,3 +104,21 @@ resolver `3`.
   copy failing-test output verbatim rather than retyping it, and verify row length
   programmatically (`len()` per row) since trailing spaces are significant and easy to drop by
   hand.
+- Adding a new side panel to `draw()`: wrap it in an outer `Layout::horizontal([Constraint::
+  Length(N), Constraint::Min(0)])` and put the existing vertical split inside the `Min(0)` chunk
+  — don't touch the vertical split itself. If a snapshot test exists, widen `TestBackend` by
+  exactly `N` instead of resizing the whole thing: the pre-existing (right-hand) columns then
+  stay byte-for-byte identical to the old snapshot, and only the new `N`-wide left columns need
+  hand-computing per row (title/border math, then paste the untouched original row content after
+  it). Verify with a quick Python snippet (border length, row length == N) rather than
+  hand-counting dashes.
+- `SessionHandle`/`SessionManager::spawn` (`mate-core/src/session.rs`) drop the `SessionSpec`
+  after building the `Agent` — nothing about model, sub_provider, or backend kind is retrievable
+  from the handle afterward. Any UI that needs to display them must have the caller
+  (`mate-cli/src/tui.rs`) pass them down explicitly as plain data (e.g. extra `String` args on
+  `mate_tui::run`), threaded through `App` and into `View`, rather than trying to pull them back
+  out of the session/backend layer.
+- `Backend` (`mate-core/src/backend.rs`) never stores a provider *name* string — it's an enum
+  (`HuggingFace { .. }` / `OpenAiCompatible(..)`) with no getter. For display purposes derive the
+  provider label at the call site instead (e.g. `config.sub_provider.clone().unwrap_or_else(||
+  "huggingface".into())`); don't add a getter to `Backend` just to feed a UI label.

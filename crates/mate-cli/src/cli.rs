@@ -1,6 +1,6 @@
 //! CLI surface used to override config, and to select a frontend (§10, `M5-1`). The tabbed
-//! TUI is the eventual default (`M7`); until then `--plain` and `--print` are the only
-//! frontends `main` can actually run.
+//! TUI (`M7`/`M8`) is the default; `--plain` and `--print` select the line-based frontend
+//! instead.
 
 use std::path::PathBuf;
 

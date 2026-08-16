@@ -1,6 +1,6 @@
 //! `mate` binary: parses args, layers config (flags → env → project file →
-//! user file → defaults), and picks a frontend — the single-tab TUI by default (`M7`; tabs
-//! land at `M8`), or `--plain`/`--print` for the plain frontend `M5` ships.
+//! user file → defaults), and picks a frontend — the tabbed TUI by default (`M7`/`M8`), or
+//! `--plain`/`--print` for the plain frontend `M5` ships.
 
 mod cli;
 mod config;

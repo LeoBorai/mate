@@ -2,6 +2,7 @@
 source: crates/mate-tui/src/ui.rs
 expression: terminal.backend()
 ---
+"⟨1 mate⟩ [+]                                                                        "
 "┌ model ───────────────┐you ›   what does build_toolset do?                         "
 "│Model: Qwen3-Coder-30B│agent › Let me check the source.                            "
 "│Provider: huggingface │✓       read_file ok                                        "

@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 crossterm = { workspace = true }
+dunce = { workspace = true }
 futures = { workspace = true }
 mate-core = { workspace = true }
 mate-tool-api = { workspace = true }
@@ -12,7 +13,9 @@ ratatui = { workspace = true }
 ratatui-textarea = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
 insta = { workspace = true }
+tempfile = { workspace = true }

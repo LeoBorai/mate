@@ -186,6 +186,16 @@ impl SessionManager {
 
         Ok(self.sessions[id].clone())
     }
+
+    /// Closes one session (`M8-3`): sends `Shutdown` so an in-flight turn is cancelled at its
+    /// next await point, then forgets the session immediately rather than waiting for its task
+    /// to notice and exit — so `max_sessions` counts it as gone the moment the tab closes, not
+    /// whenever the task eventually drains its command queue. A no-op if `id` is already gone.
+    pub async fn close(&mut self, id: SessionId) {
+        if let Some(handle) = self.sessions.remove(id) {
+            let _ = handle.send(SessionCmd::Shutdown).await;
+        }
+    }
 }
 
 /// Spawns `session_task` under a supervising task (`M6-5`): the supervisor's own `JoinHandle`
@@ -622,5 +632,55 @@ mod tests {
             manager.spawn(&spec, ctx),
             Err(SessionError::TooManySessions(1))
         ));
+    }
+
+    #[tokio::test]
+    async fn closing_a_session_frees_its_slot_and_shuts_it_down() {
+        let backend = Arc::new(
+            Backend::huggingface("dummy-key", None, None).expect("offline client construction"),
+        );
+        let (mut manager, _events) = SessionManager::new(backend, 1);
+
+        let spec = crate::config::SessionSpec {
+            title: "t".to_string(),
+            root: std::path::PathBuf::from("."),
+            agent: crate::config::AgentSpec {
+                model: "org/model".to_string(),
+                sub_provider: None,
+                base_url: None,
+                preamble: String::new(),
+                temperature: 0.2,
+                max_tokens: 512,
+                max_turns: 4,
+                http: crate::config::HttpPolicy::default(),
+                may_delegate: false,
+                delegation: crate::config::DelegationPolicy::default(),
+            },
+            delegation: crate::config::DelegationPolicy::default(),
+            max_turns: 4,
+        };
+        let ctx = ToolCtx {
+            agent: AgentId::ROOT,
+            root: std::path::PathBuf::from("."),
+            max_output_bytes: 1_000_000,
+            spawner: None,
+            activity: tokio::sync::mpsc::channel(1).0,
+            cancel: CancellationToken::new(),
+        };
+
+        let handle = manager.spawn(&spec, ctx.clone()).unwrap();
+        let mut status = handle.status.clone();
+
+        manager.close(handle.id).await;
+
+        // `close` removes the session immediately, before its task has necessarily observed
+        // `Shutdown` — `max_sessions` must count it as gone right away, not lazily.
+        assert_eq!(manager.len(), 0);
+        assert!(manager.spawn(&spec, ctx).is_ok());
+
+        status
+            .wait_for(|s| *s == SessionStatus::Closed)
+            .await
+            .unwrap();
     }
 }

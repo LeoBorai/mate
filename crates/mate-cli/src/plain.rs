@@ -191,12 +191,17 @@ pub(crate) fn classify_verify_error(classified: ProviderError) -> MateError {
 }
 
 pub(crate) fn resolve_workspace_root(cli: &Cli) -> Result<PathBuf, MateError> {
-    let root = cli
-        .dir
-        .first()
-        .cloned()
-        .unwrap_or_else(|| PathBuf::from("."));
-    canonicalize(&root)
+    Ok(resolve_workspace_roots(cli)?.remove(0))
+}
+
+/// Every workspace root `-C`/`--dir` names, canonicalized (`M8-5`: one tab per path). A `Cli`
+/// with no `--dir` at all still yields exactly one root — the current directory — matching
+/// [`resolve_workspace_root`]'s existing single-session default.
+pub(crate) fn resolve_workspace_roots(cli: &Cli) -> Result<Vec<PathBuf>, MateError> {
+    if cli.dir.is_empty() {
+        return Ok(vec![canonicalize(&PathBuf::from("."))?]);
+    }
+    cli.dir.iter().map(|dir| canonicalize(dir)).collect()
 }
 
 fn canonicalize(root: &Path) -> Result<PathBuf, MateError> {
@@ -335,5 +340,31 @@ mod tests {
     fn workspace_root_rejects_a_path_that_does_not_exist() {
         let err = resolve_workspace_root(&cli(&["-C", "/does/not/exist/anywhere"])).unwrap_err();
         assert_eq!(err.exit_code(), 3);
+    }
+
+    #[test]
+    fn repeated_dir_flags_resolve_to_one_root_per_path() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        let roots = resolve_workspace_roots(&cli(&[
+            "-C",
+            a.path().to_str().unwrap(),
+            "-C",
+            b.path().to_str().unwrap(),
+        ]))
+        .unwrap();
+        assert_eq!(
+            roots,
+            vec![
+                dunce::canonicalize(a.path()).unwrap(),
+                dunce::canonicalize(b.path()).unwrap(),
+            ]
+        );
+    }
+
+    #[test]
+    fn no_dir_flag_resolves_to_a_single_root_the_current_directory() {
+        let roots = resolve_workspace_roots(&cli(&[])).unwrap();
+        assert_eq!(roots, vec![dunce::canonicalize(".").unwrap()]);
     }
 }
