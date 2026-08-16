@@ -10,5 +10,6 @@ pub mod preamble;
 pub mod provider_error;
 pub mod session;
 pub mod streaming;
+pub mod subagent;
 pub mod toolset;
 mod turn_cap;

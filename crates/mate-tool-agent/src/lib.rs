@@ -3,3 +3,7 @@
 //! window and returns a short report, never a raw dump — the whole point is
 //! keeping the parent's context small. Subagents are not addressable by the user
 //! and cannot spawn further subagents by default.
+
+mod spawn_agent;
+
+pub use spawn_agent::{SpawnAgent, SpawnAgentArgs};
