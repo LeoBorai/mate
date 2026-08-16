@@ -169,6 +169,15 @@ impl SpawnForm {
     }
 }
 
+/// Derives a tab title from the prompt just sent — the tab bar's `title` is meant to name the
+/// task in flight, so it's refreshed on every prompt rather than only the first. Falls back to
+/// `None` (keeping the previous title) for a prompt that's blank once trimmed; the display side
+/// (`ui::truncate_title`) handles anything longer than fits.
+fn task_title(prompt: &str) -> Option<String> {
+    let first_line = prompt.lines().next().unwrap_or(prompt).trim();
+    (!first_line.is_empty()).then(|| first_line.to_string())
+}
+
 pub struct App {
     manager: SessionManager,
     events: mpsc::Receiver<SessionEvent>,
@@ -397,6 +406,9 @@ impl App {
             if !self.tabs[self.active].running_turn {
                 self.tabs[self.active].transcript.push_user(prompt.clone());
                 self.tabs[self.active].running_turn = true;
+                if let Some(title) = task_title(&prompt) {
+                    self.tabs[self.active].title = title;
+                }
                 let _ = self.tabs[self.active]
                     .handle
                     .send(SessionCmd::Prompt(prompt))
