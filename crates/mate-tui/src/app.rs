@@ -259,7 +259,9 @@ impl App {
         let evicted = match event.event {
             AgentEvent::Token(text) => {
                 activity = true;
-                tab.transcript.push_token(&text)
+                let push = tab.transcript.push_token(&text);
+                tab.wrap.invalidate(push.changed);
+                push.evicted
             }
             AgentEvent::ToolCallStarted { name } => {
                 activity = true;
