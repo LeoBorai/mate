@@ -4803,14 +4803,17 @@ name = "mate-tui"
 version = "0.1.0"
 dependencies = [
  "crossterm",
+ "dunce",
  "futures",
  "insta",
  "mate-core",
  "mate-tool-api",
  "ratatui",
  "ratatui-textarea",
+ "tempfile",
  "thiserror 2.0.20",
  "tokio",
+ "tokio-util",
  "tracing",
 ]
 

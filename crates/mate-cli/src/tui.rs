@@ -1,22 +1,20 @@
-//! Wires the default frontend (`M7`): the same backend/agent setup `plain.rs` uses, but routed
-//! through `mate_core::session::SessionManager` and `mate_tui::run` instead of a bare `Agent`.
-//! Tabs aren't here yet (`M8`) — `M7` spawns exactly one session.
+//! Wires the default frontend (`M7`/`M8`): the same backend/agent setup `plain.rs` uses, routed
+//! through `mate_core::session::SessionManager` and `mate_tui::run`. `M8-5` opens one tab per
+//! `-C`/`--dir` path; `mate_tui::SessionDefaults` carries everything a tab opened later, via the
+//! TUI's own `Ctrl+T` spawn form, needs to build the same kind of session.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use mate_core::backend::Backend;
-use mate_core::config::{AgentSpec, SessionSpec};
-use mate_core::preamble::{PreambleRole, render_preamble};
 use mate_core::provider_error::ProviderError;
 use mate_core::session::SessionManager;
-use mate_core::toolset::tool_descriptors;
-use mate_tool_api::{AgentId, ToolCtx};
-use tokio_util::sync::CancellationToken;
+use mate_tui::{InitialSession, SessionDefaults};
 
 use crate::config::{Config, api_token};
 use crate::error::MateError;
 use crate::plain::{
-    DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE, classify_verify_error, resolve_workspace_root,
+    DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE, classify_verify_error, resolve_workspace_roots,
 };
 
 pub async fn run(cli: &crate::cli::Cli, config: &Config) -> Result<(), MateError> {
@@ -30,64 +28,45 @@ pub async fn run(cli: &crate::cli::Cli, config: &Config) -> Result<(), MateError
         .await
         .map_err(|err| classify_verify_error(ProviderError::classify(&err)))?;
 
-    let workspace_root = resolve_workspace_root(cli)?;
-    let title = workspace_root
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "mate".to_string());
-    let preamble = render_preamble(
-        PreambleRole::Root,
-        &workspace_root,
-        std::env::consts::OS,
-        &tool_descriptors(),
-    );
-
-    let spec = SessionSpec {
-        title,
-        root: workspace_root.clone(),
-        agent: AgentSpec {
-            model: config.model.clone(),
-            sub_provider: config.sub_provider.clone(),
-            base_url: None,
-            preamble,
-            temperature: DEFAULT_TEMPERATURE,
-            max_tokens: DEFAULT_MAX_TOKENS,
-            max_turns: config.max_turns,
-            http: config.http.clone(),
-            may_delegate: config.delegation.enabled,
-            delegation: config.delegation.clone(),
-        },
-        delegation: config.delegation.clone(),
+    let roots = resolve_workspace_roots(cli)?;
+    let defaults = SessionDefaults {
+        model: config.model.clone(),
+        sub_provider: config.sub_provider.clone(),
+        temperature: DEFAULT_TEMPERATURE,
+        max_tokens: DEFAULT_MAX_TOKENS,
         max_turns: config.max_turns,
+        http: config.http.clone(),
+        delegation: config.delegation.clone(),
+        max_output_bytes: config.tools.max_output_bytes,
     };
 
     let (mut manager, events_rx) = SessionManager::new(Arc::new(backend), config.max_sessions);
-    let (activity, _activity_rx) = tokio::sync::mpsc::channel(64);
-    let ctx = ToolCtx {
-        agent: AgentId::ROOT,
-        root: workspace_root,
-        max_output_bytes: config.tools.max_output_bytes,
-        spawner: None,
-        activity,
-        cancel: CancellationToken::new(),
-    };
-    let handle = manager
-        .spawn(&spec, ctx)
-        .map_err(|err| MateError::Other(anyhow::anyhow!(err)))?;
-    let session_id = handle.id;
+    let provider = defaults.provider_label();
 
-    let provider = config
-        .sub_provider
-        .clone()
-        .unwrap_or_else(|| "huggingface".to_string());
+    let mut sessions = Vec::with_capacity(roots.len());
+    for root in &roots {
+        let title = title_for(root);
+        let spec = mate_tui::build_spec(&defaults, root, title.clone(), defaults.http.enabled);
+        let ctx = mate_tui::build_tool_ctx(root.clone(), defaults.max_output_bytes);
+        let handle = manager
+            .spawn(&spec, ctx)
+            .map_err(|err| MateError::Other(anyhow::anyhow!(err)))?;
+        sessions.push(InitialSession {
+            session_id: handle.id,
+            handle,
+            title,
+            model: defaults.model.clone(),
+            provider: provider.clone(),
+        });
+    }
 
-    mate_tui::run(
-        handle,
-        session_id,
-        events_rx,
-        config.model.clone(),
-        provider,
-    )
-    .await
-    .map_err(|err| MateError::Io(anyhow::anyhow!(err)))
+    mate_tui::run(manager, events_rx, sessions, defaults)
+        .await
+        .map_err(|err| MateError::Io(anyhow::anyhow!(err)))
+}
+
+fn title_for(root: &Path) -> String {
+    root.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "mate".to_string())
 }
