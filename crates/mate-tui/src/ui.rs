@@ -23,8 +23,8 @@ const MAX_INPUT_HEIGHT: u16 = 10;
 /// Fixed width reserved for a rendered line's role prefix (`you ›`, `agent ›`, a tool glyph),
 /// so wrapped body text lines up under the first line regardless of which prefix produced it.
 const PREFIX_WIDTH: u16 = 8;
-/// Width of the left model/provider panel, borders included.
-const MODEL_PANEL_WIDTH: u16 = 24;
+/// Height of the bottom status bar (glyphs + values, no border).
+const STATUS_BAR_HEIGHT: u16 = 1;
 /// Tab titles longer than this are middle-truncated with `…` — keeps every tab's width
 /// bounded, which is what makes the overflow math in [`tab_bar_segments`] tractable.
 const MAX_TAB_TITLE: usize = 10;
@@ -48,6 +48,8 @@ pub(crate) struct View<'a> {
     pub(crate) running_turn: bool,
     pub(crate) model: &'a str,
     pub(crate) provider: &'a str,
+    pub(crate) tokens_sent: u64,
+    pub(crate) tokens_received: u64,
     pub(crate) quit_armed: bool,
     pub(crate) close_confirm: bool,
 }
@@ -72,24 +74,25 @@ pub(crate) struct AppView<'a> {
 
 pub(crate) fn draw(f: &mut Frame<'_>, view: &mut AppView<'_>) {
     let area = f.area();
-    let [tab_area, body_area] =
-        Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
+    let [tab_area, body_area, status_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(0),
+        Constraint::Length(STATUS_BAR_HEIGHT),
+    ])
+    .areas(area);
     render_tab_bar(f, tab_area, &view.tabs, view.active);
     draw_body(f, body_area, &mut view.session);
+    render_status_bar(f, status_area, &view.session);
     if let Some(form) = &view.spawn_form {
         render_spawn_form(f, area, form);
     }
 }
 
 fn draw_body(f: &mut Frame<'_>, area: Rect, view: &mut View<'_>) {
-    let [panel_area, main_area] =
-        Layout::horizontal([Constraint::Length(MODEL_PANEL_WIDTH), Constraint::Min(0)]).areas(area);
-
     let input_height = input_height(view);
     let [transcript_area, input_area] =
-        Layout::vertical([Constraint::Min(0), Constraint::Length(input_height)]).areas(main_area);
+        Layout::vertical([Constraint::Min(0), Constraint::Length(input_height)]).areas(area);
 
-    render_model_panel(f, panel_area, view);
     render_transcript(f, transcript_area, view);
     render_input(f, input_area, view);
 }
@@ -317,15 +320,16 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     }
 }
 
-fn render_model_panel(f: &mut Frame<'_>, area: Rect, view: &View<'_>) {
-    let block = Block::default().borders(Borders::ALL).title(" model ");
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-    let lines = vec![
-        Line::from(format!("Model: {}", view.model)),
-        Line::from(format!("Provider: {}", view.provider)),
-    ];
-    f.render_widget(Paragraph::new(lines), inner);
+/// Bottom status bar (deprecates the old left model/provider panel): a single row, no border,
+/// filled with a solid gray background — glyphs stand in for labels so the values (provider,
+/// agent model, tokens sent/received) fit without eating transcript width.
+fn render_status_bar(f: &mut Frame<'_>, area: Rect, view: &View<'_>) {
+    let style = Style::default().bg(Color::DarkGray).fg(Color::White);
+    let line = Line::from(format!(
+        " 📡 {}  🤖 {}  ↑{}  ↓{}",
+        view.provider, view.model, view.tokens_sent, view.tokens_received
+    ));
+    f.render_widget(Paragraph::new(line).style(style), area);
 }
 
 fn input_height(view: &View<'_>) -> u16 {
@@ -533,9 +537,9 @@ mod tests {
         assert_eq!(tab_marker(&t), " !");
     }
 
-    /// The `M7-6` baseline snapshot, extended by `M8-1`: the tab bar now occupies row 0, and
-    /// everything below it — the model panel, transcript, and input box — is byte-for-byte the
-    /// same as the pre-`M8` snapshot, just shifted down by the one new row.
+    /// The `M7-6` baseline snapshot, extended by `M8-1`: the tab bar occupies row 0, and the
+    /// transcript and input box fill the body. The left model/provider panel is gone — that
+    /// state now renders as the bottom status bar (see [`render_status_bar`]) instead.
     #[test]
     fn baseline_snapshot() {
         let mut transcript = Transcript::new();
@@ -560,6 +564,8 @@ mod tests {
                 running_turn: false,
                 model: "Qwen3-Coder-30B",
                 provider: "huggingface",
+                tokens_sent: 0,
+                tokens_received: 0,
                 quit_armed: false,
                 close_confirm: false,
             },
