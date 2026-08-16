@@ -46,7 +46,11 @@ async fn a_read_file_tool_call_round_trips_to_a_grounded_answer() {
     ]);
 
     let agent = AgentBuilder::new(model)
-        .tool_server_handle(build_toolset(support::tool_ctx(root)))
+        .tool_server_handle(build_toolset(
+            support::tool_ctx(root),
+            &mate_core::config::HttpPolicy::default(),
+            support::http_shared(),
+        ))
         .default_max_turns(4)
         .build();
 
@@ -78,7 +82,11 @@ async fn a_tool_failure_reaches_the_model_as_a_tool_result_and_the_model_recover
     ]);
 
     let agent = AgentBuilder::new(model)
-        .tool_server_handle(build_toolset(support::tool_ctx(root)))
+        .tool_server_handle(build_toolset(
+            support::tool_ctx(root),
+            &mate_core::config::HttpPolicy::default(),
+            support::http_shared(),
+        ))
         .default_max_turns(4)
         .build();
 
@@ -119,7 +127,11 @@ async fn a_model_that_always_calls_tools_terminates_at_the_turn_cap_instead_of_l
     ]);
 
     let agent = AgentBuilder::new(model)
-        .tool_server_handle(build_toolset(support::tool_ctx(root)))
+        .tool_server_handle(build_toolset(
+            support::tool_ctx(root),
+            &mate_core::config::HttpPolicy::default(),
+            support::http_shared(),
+        ))
         .default_max_turns(3)
         .build();
 

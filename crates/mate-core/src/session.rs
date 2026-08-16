@@ -40,6 +40,7 @@
 use std::sync::Arc;
 
 use mate_tool_api::{AgentId, ToolCtx};
+use mate_tool_http::HttpShared;
 use rig::agent::Agent;
 use rig::completion::{CompletionModel, GetTokenUsage, Message};
 use slotmap::SlotMap;
@@ -132,20 +133,27 @@ const CMD_CHANNEL_CAPACITY: usize = 8;
 /// its task under crash isolation, and is the one place `max_sessions` is enforced.
 pub struct SessionManager {
     backend: Arc<Backend>,
+    http: Arc<HttpShared>,
     events_tx: mpsc::Sender<SessionEvent>,
     sessions: SlotMap<SessionId, SessionHandle>,
     max_sessions: usize,
 }
 
 impl SessionManager {
-    /// Builds a manager sharing `backend` across every session it spawns, and the single
-    /// bounded event channel (§5.2) every session forwards into. Returns the receiving end
-    /// for the caller (the TUI, from `M7` on) to poll.
-    pub fn new(backend: Arc<Backend>, max_sessions: usize) -> (Self, mpsc::Receiver<SessionEvent>) {
+    /// Builds a manager sharing `backend` and `http` (§5.3: one process-wide DNS resolver and
+    /// per-host rate limiter, same reasoning as the shared HF client) across every session it
+    /// spawns, plus the single bounded event channel (§5.2) every session forwards into.
+    /// Returns the receiving end for the caller (the TUI, from `M7` on) to poll.
+    pub fn new(
+        backend: Arc<Backend>,
+        http: Arc<HttpShared>,
+        max_sessions: usize,
+    ) -> (Self, mpsc::Receiver<SessionEvent>) {
         let (events_tx, events_rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
         (
             Self {
                 backend,
+                http,
                 events_tx,
                 sessions: SlotMap::with_key(),
                 max_sessions,
@@ -200,6 +208,7 @@ impl SessionManager {
         let subagents = if spec.agent.may_delegate {
             let runner = Arc::new(SubagentRunner::new(
                 self.backend.clone(),
+                self.http.clone(),
                 id,
                 events_tx.clone(),
                 ctx.root.clone(),
@@ -212,7 +221,7 @@ impl SessionManager {
             None
         };
 
-        let built = build_agent(&self.backend, &spec.agent, ctx);
+        let built = build_agent(&self.backend, &self.http, &spec.agent, ctx);
 
         match built {
             BuiltAgent::HuggingFace(agent) => spawn_supervised(
@@ -445,6 +454,10 @@ mod tests {
     use rig::tool::{Tool, ToolContext};
     use serde::{Deserialize, Serialize};
     use tokio::sync::Notify;
+
+    fn http_shared() -> Arc<HttpShared> {
+        Arc::new(HttpShared::new(60).unwrap())
+    }
 
     /// A tool that panics on every call — the only reliable way to prove crash isolation
     /// (`M6-5`) without depending on some other crate's internals happening to panic.
@@ -699,7 +712,7 @@ mod tests {
         let backend = Arc::new(
             Backend::huggingface("dummy-key", None, None).expect("offline client construction"),
         );
-        let (mut manager, _events) = SessionManager::new(backend, 1);
+        let (mut manager, _events) = SessionManager::new(backend, http_shared(), 1);
 
         let spec = crate::config::SessionSpec {
             title: "t".to_string(),
@@ -741,7 +754,7 @@ mod tests {
         let backend = Arc::new(
             Backend::huggingface("dummy-key", None, None).expect("offline client construction"),
         );
-        let (mut manager, _events) = SessionManager::new(backend, 1);
+        let (mut manager, _events) = SessionManager::new(backend, http_shared(), 1);
 
         let spec = crate::config::SessionSpec {
             title: "t".to_string(),
@@ -794,7 +807,7 @@ mod tests {
         let backend = Arc::new(
             Backend::huggingface("dummy-key", None, None).expect("offline client construction"),
         );
-        let (mut manager, _events) = SessionManager::new(backend, 1);
+        let (mut manager, _events) = SessionManager::new(backend, http_shared(), 1);
 
         let spec = crate::config::SessionSpec {
             title: "t".to_string(),

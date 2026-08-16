@@ -12,7 +12,10 @@
 //! same function builds root agents and subagents alike; a subagent is just an `AgentSpec` with
 //! a narrower preamble, a narrower `ToolCtx`, and `may_delegate: false`.
 
+use std::sync::Arc;
+
 use mate_tool_api::ToolCtx;
+use mate_tool_http::HttpShared;
 use rig::agent::Agent;
 use rig::client::AgentClientExt;
 use rig::completion::Message;
@@ -57,8 +60,13 @@ impl BuiltAgent {
 /// [`TurnCapHook`] (`M4-4`). Logs an `info` line before and after each branch — the resolved
 /// model (post [`Backend::qualify_model`] on the HuggingFace path) is the detail most worth
 /// having in the log file when a build fails or routes somewhere unexpected.
-pub fn build_agent(backend: &Backend, spec: &AgentSpec, ctx: ToolCtx) -> BuiltAgent {
-    let tools = build_toolset(ctx);
+pub fn build_agent(
+    backend: &Backend,
+    http: &Arc<HttpShared>,
+    spec: &AgentSpec,
+    ctx: ToolCtx,
+) -> BuiltAgent {
+    let tools = build_toolset(ctx, &spec.http, http.clone());
     match backend {
         Backend::HuggingFace { client, .. } => {
             let model = backend.qualify_model(&spec.model);

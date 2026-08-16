@@ -6,8 +6,10 @@
 #![allow(dead_code)] // not every test file in this crate uses every helper.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use mate_tool_api::{AgentId, ToolCtx};
+use mate_tool_http::HttpShared;
 use tokio_util::sync::CancellationToken;
 
 /// A `ToolCtx` rooted at `root`, with a generously-sized activity channel and no delegation
@@ -22,4 +24,11 @@ pub fn tool_ctx(root: PathBuf) -> ToolCtx {
         activity,
         cancel: CancellationToken::new(),
     }
+}
+
+/// The process-wide HTTP state `build_agent`/`build_toolset` now require (`M10`) — a fresh,
+/// offline-safe instance per test, since nothing here is actually shared across a real
+/// process.
+pub fn http_shared() -> Arc<HttpShared> {
+    Arc::new(HttpShared::new(60).expect("offline construction never touches the network"))
 }
