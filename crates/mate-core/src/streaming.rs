@@ -25,7 +25,7 @@
 use std::collections::HashMap;
 
 use futures::{Stream, StreamExt};
-use mate_tool_api::{AgentId, SubagentOutcome};
+use mate_tool_api::{AgentId, SubagentOutcome, ToolActivity};
 use rig::OneOrMany;
 use rig::agent::{Agent, MultiTurnStreamItem, StreamingError};
 use rig::completion::{CompletionModel, GetTokenUsage, Message, Usage};
@@ -66,6 +66,11 @@ pub enum AgentEvent {
         outcome: SubagentOutcome,
     },
     Usage(Usage),
+    /// One tool's typed telemetry record (§9.3, `M11-4`), folded onto this stream from
+    /// `ToolCtx::activity` by `crate::session::SessionManager::spawn` rather than produced by
+    /// `drive`/`map_item` itself — a tool call and its activity record don't arrive from the
+    /// same place `MultiTurnStreamItem` does.
+    Activity(ToolActivity),
     TurnComplete,
     Error(String),
 }
@@ -129,17 +134,28 @@ impl TurnOutcome {
     }
 }
 
-/// Session-level usage accumulation (§5.1, §9.11): `root` and `per_turn` are populated as
-/// turns complete; `subagents` stays at the zero sentinel until `M9`'s `SubagentSpawner`
-/// reports subagent usage (`M2-5`).
+/// Sparkline window for §9.5's context widget (`M11-5`): older per-turn samples are dropped
+/// once a session outgrows it, so a long-running tab's sparkline data doesn't grow without
+/// bound — [`UsageRollup::turns`] is the uncapped counter `per_turn_avg` needs instead.
+const PER_TURN_HISTORY: usize = 32;
+
+/// Session-level usage accumulation (§5.1, §9.11): `root` and `per_turn` are populated as root
+/// turns complete; `subagents` folds in every `AgentEvent::Usage` tagged with a non-root
+/// `AgentId` — one per completion call inside a subagent's own turn, the same granularity a
+/// root turn reports at (`M9-2`, `M11-5`), just without `per_turn`/`turns` bookkeeping of its
+/// own (the sparkline, §9.5, is root-only; a subagent's own turn count is on its
+/// `SubagentReport` instead).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct UsageRollup {
     pub root: Usage,
     pub subagents: Usage,
-    /// Sent (prompt) tokens for each completed root turn, oldest first — the sparkline data
-    /// for §9.5's context widget. Capping this to a fixed window is a display concern for the
-    /// widget that reads it (§9.11), not enforced here.
+    /// Sent (prompt) tokens for the last [`PER_TURN_HISTORY`] completed root turns, oldest
+    /// first — the sparkline data for §9.5's context widget. Bounded here, not just by the
+    /// widget that reads it, so nothing downstream has to re-truncate it itself.
     pub per_turn: Vec<u64>,
+    /// Root turns completed this session, uncapped — the denominator `per_turn_avg` (§9.5)
+    /// needs, since `per_turn.len()` stops growing once [`PER_TURN_HISTORY`] is reached.
+    pub turns: usize,
 }
 
 impl UsageRollup {
@@ -152,7 +168,25 @@ impl UsageRollup {
         self.root.cache_creation_input_tokens += usage.cache_creation_input_tokens;
         self.root.tool_use_prompt_tokens += usage.tool_use_prompt_tokens;
         self.root.reasoning_tokens += usage.reasoning_tokens;
+        self.turns += 1;
         self.per_turn.push(usage.input_tokens);
+        if self.per_turn.len() > PER_TURN_HISTORY {
+            self.per_turn.remove(0);
+        }
+    }
+
+    /// Folds one subagent completion call's usage into the rollup (`M11-5`) — called once per
+    /// `AgentEvent::Usage` tagged with a non-root `AgentId`, the same cadence
+    /// [`Self::record_root_turn`] is called at for the root agent. No `per_turn`/`turns`
+    /// bookkeeping here: the sparkline (§9.5) is root-only.
+    pub fn record_subagent_turn(&mut self, usage: Usage) {
+        self.subagents.input_tokens += usage.input_tokens;
+        self.subagents.output_tokens += usage.output_tokens;
+        self.subagents.total_tokens += usage.total_tokens;
+        self.subagents.cached_input_tokens += usage.cached_input_tokens;
+        self.subagents.cache_creation_input_tokens += usage.cache_creation_input_tokens;
+        self.subagents.tool_use_prompt_tokens += usage.tool_use_prompt_tokens;
+        self.subagents.reasoning_tokens += usage.reasoning_tokens;
     }
 }
 
@@ -630,8 +664,73 @@ mod tests {
         assert_eq!(rollup.root.output_tokens, 30);
         assert_eq!(rollup.root.total_tokens, 180);
         assert_eq!(rollup.per_turn, vec![100, 50]);
-        // Untouched until `M9`.
+        assert_eq!(rollup.turns, 2);
+        // `record_subagent_turn` was never called.
         assert_eq!(rollup.subagents, Usage::new());
+    }
+
+    #[test]
+    fn per_turn_history_is_bounded_but_turns_and_totals_stay_uncapped() {
+        let mut rollup = UsageRollup::default();
+        for _ in 0..40 {
+            rollup.record_root_turn(Usage {
+                input_tokens: 1,
+                output_tokens: 0,
+                total_tokens: 1,
+                cached_input_tokens: 0,
+                cache_creation_input_tokens: 0,
+                tool_use_prompt_tokens: 0,
+                reasoning_tokens: 0,
+            });
+        }
+
+        assert_eq!(
+            rollup.per_turn.len(),
+            32,
+            "the sparkline window must stay capped at PER_TURN_HISTORY regardless of turn count"
+        );
+        assert_eq!(
+            rollup.turns, 40,
+            "the uncapped turn counter must still reflect every turn, not just the window"
+        );
+        assert_eq!(
+            rollup.root.input_tokens, 40,
+            "totals must reconcile with every turn recorded, not just the windowed sum"
+        );
+    }
+
+    #[test]
+    fn record_subagent_turn_folds_into_the_subagent_side_without_touching_root() {
+        let mut rollup = UsageRollup::default();
+        rollup.record_root_turn(Usage {
+            input_tokens: 100,
+            output_tokens: 20,
+            total_tokens: 120,
+            cached_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            tool_use_prompt_tokens: 0,
+            reasoning_tokens: 0,
+        });
+        rollup.record_subagent_turn(Usage {
+            input_tokens: 40,
+            output_tokens: 8,
+            total_tokens: 48,
+            cached_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            tool_use_prompt_tokens: 0,
+            reasoning_tokens: 0,
+        });
+
+        assert_eq!(
+            rollup.root.input_tokens, 100,
+            "a subagent's usage must never bleed into the root side of the rollup"
+        );
+        assert_eq!(rollup.subagents.input_tokens, 40);
+        assert_eq!(rollup.subagents.total_tokens, 48);
+        assert_eq!(
+            rollup.turns, 1,
+            "the root turn counter must not count a subagent's report as a root turn"
+        );
     }
 
     #[test]

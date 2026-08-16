@@ -15,6 +15,12 @@
 //! one-more-press confirm if it's mid-turn (`SessionManager::close` cancels it). `Ctrl+C`'s
 //! existing double-press quit (`M7`) now shuts every open tab down on the way out, not just
 //! one — see [`run`].
+//!
+//! `Ctrl+B` toggles each tab's [`crate::panel::Panel`] (§9.7/§9.8, narrowed `M12`): its
+//! `network`/`documents` ring buffers are folded straight out of `AgentEvent::Activity` in
+//! [`App::on_session_event`], the one event kind routed regardless of which agent produced it
+//! — root or subagent, since the panel shows the whole session's tool activity (§9.3) even
+//! though the transcript itself stays root-only (§9.9).
 
 use std::path::PathBuf;
 
@@ -27,6 +33,7 @@ use tokio::sync::mpsc;
 use tokio::time::{Duration, Interval, MissedTickBehavior, interval};
 
 use crate::input::InputBox;
+use crate::panel::Panel;
 use crate::session_factory::{self, SessionDefaults};
 use crate::transcript::Transcript;
 use crate::ui::{self, AppView};
@@ -47,6 +54,9 @@ pub struct InitialSession {
     pub title: String,
     pub model: String,
     pub provider: String,
+    /// The session's workspace root — the documents log (§9.8) renders file paths relative to
+    /// this rather than the absolute paths `ToolActivity::FileTouched` carries.
+    pub root: PathBuf,
 }
 
 /// One tab's live state (`M8-2`). Everything that was a flat field on `App` before `M8` — the
@@ -58,6 +68,7 @@ struct SessionTab {
     title: String,
     model: String,
     provider: String,
+    root: PathBuf,
     transcript: Transcript,
     wrap: WrapCache,
     input: InputBox,
@@ -72,6 +83,12 @@ struct SessionTab {
     /// Set when a background tab errors (`M8-4`); cleared on switching to it. Takes marker
     /// priority over `unread` — an error is worth more attention than "something happened".
     needs_attention: bool,
+    /// Network/documents activity logs (§9.7/§9.8), folded from `AgentEvent::Activity` — one
+    /// panel per tab, never shared across tabs (§9.1).
+    panel: Panel,
+    /// `Ctrl+B` toggle, per tab so a spawn form's freshly-opened tab always starts visible
+    /// regardless of what another tab's user preference is (§9.1: panel state is per-session).
+    panel_visible: bool,
 }
 
 impl SessionTab {
@@ -81,6 +98,7 @@ impl SessionTab {
         title: String,
         model: String,
         provider: String,
+        root: PathBuf,
     ) -> Self {
         Self {
             id,
@@ -88,6 +106,7 @@ impl SessionTab {
             title,
             model,
             provider,
+            root,
             transcript: Transcript::new(),
             wrap: WrapCache::new(),
             input: InputBox::new(),
@@ -97,6 +116,8 @@ impl SessionTab {
             tokens_received: 0,
             unread: false,
             needs_attention: false,
+            panel: Panel::default(),
+            panel_visible: true,
         }
     }
 }
@@ -200,7 +221,7 @@ impl App {
     ) -> Self {
         let tabs = sessions
             .into_iter()
-            .map(|s| SessionTab::new(s.session_id, s.handle, s.title, s.model, s.provider))
+            .map(|s| SessionTab::new(s.session_id, s.handle, s.title, s.model, s.provider, s.root))
             .collect();
         Self {
             manager,
@@ -246,6 +267,11 @@ impl App {
                 transcript: &tab.transcript,
                 wrap: &mut tab.wrap,
                 input: &tab.input,
+                root: &tab.root,
+                panel_visible: tab.panel_visible,
+                network: &tab.panel.network,
+                documents: &tab.panel.documents,
+                network_turn_requests: tab.panel.turn_requests,
                 scroll: tab.scroll,
                 running_turn: tab.running_turn,
                 model: &tab.model,
@@ -260,17 +286,28 @@ impl App {
 
     /// Routes one session's event to its tab (`M8-2`), regardless of which tab is active.
     /// Background activity marks the tab unread; a background error marks it needing
-    /// attention. Only the root agent has a producer before `M9`'s subagents exist.
+    /// attention. `AgentEvent::Activity` is the one exception to "root agent only" below — the
+    /// panel shows the whole session's tool activity, root and subagents together (§9.3), even
+    /// though the transcript itself stays root-only (§9.9: subagent chatter never inlines).
     fn on_session_event(&mut self, event: SessionEvent) {
-        if event.agent != AgentId::ROOT {
-            return;
-        }
         let Some(idx) = self.tabs.iter().position(|t| t.id == event.session) else {
             return;
         };
         self.dirty = true;
         let is_active = idx == self.active;
         let tab = &mut self.tabs[idx];
+
+        if let AgentEvent::Activity(record) = event.event {
+            tab.panel.push(event.agent, record);
+            if !is_active {
+                tab.unread = true;
+            }
+            return;
+        }
+
+        if event.agent != AgentId::ROOT {
+            return;
+        }
 
         let mut activity = false;
         let evicted = match event.event {
@@ -308,10 +345,12 @@ impl App {
                 tab.tokens_received += usage.output_tokens;
                 None
             }
-            // No producer yet: approvals land at `M13`, subagent lifecycle at `M9`.
+            // No consumer yet in this transcript-only view: approvals land at `M13`, the
+            // subagent roster at full `M12`.
             AgentEvent::ApprovalRequired { .. }
             | AgentEvent::SubagentSpawned { .. }
             | AgentEvent::SubagentFinished { .. } => None,
+            AgentEvent::Activity(_) => unreachable!("handled above, before the root-only gate"),
         };
         if activity && !is_active {
             tab.unread = true;
@@ -379,6 +418,12 @@ impl App {
             return;
         }
 
+        if ctrl && matches!(key.code, KeyCode::Char('b' | 'B')) {
+            let visible = &mut self.tabs[self.active].panel_visible;
+            *visible = !*visible;
+            return;
+        }
+
         if ctrl && matches!(key.code, KeyCode::Left) {
             let len = self.tabs.len();
             self.switch_to((self.active + len - 1) % len);
@@ -406,6 +451,7 @@ impl App {
             if !self.tabs[self.active].running_turn {
                 self.tabs[self.active].transcript.push_user(prompt.clone());
                 self.tabs[self.active].running_turn = true;
+                self.tabs[self.active].panel.reset_turn();
                 if let Some(title) = task_title(&prompt) {
                     self.tabs[self.active].title = title;
                 }
@@ -480,7 +526,7 @@ impl App {
             .unwrap_or_else(|| "mate".to_string());
 
         let spec = session_factory::build_spec(&defaults, &root, title.clone(), form.http_enabled);
-        let ctx = session_factory::build_tool_ctx(root, defaults.max_output_bytes);
+        let ctx = session_factory::build_tool_ctx(root.clone(), defaults.max_output_bytes);
 
         match self.manager.spawn(&spec, ctx) {
             Ok(handle) => {
@@ -491,6 +537,7 @@ impl App {
                     title,
                     defaults.model.clone(),
                     provider,
+                    root,
                 ));
                 let new_idx = self.tabs.len() - 1;
                 self.switch_to(new_idx);
@@ -700,6 +747,7 @@ mod tests {
                 title: format!("s{i}"),
                 model: "org/model".to_string(),
                 provider: "huggingface".to_string(),
+                root: PathBuf::from("."),
             });
         }
         App::new(manager, events_rx, sessions, defaults())
@@ -834,5 +882,74 @@ mod tests {
 
         assert_eq!(app.tabs.len(), 1, "no tab should open for a bad directory");
         assert!(app.spawn_form.as_ref().unwrap().error.is_some());
+    }
+
+    fn ctrl_key(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
+    fn net_activity() -> mate_tool_api::ToolActivity {
+        mate_tool_api::ToolActivity::NetRequest {
+            method: http::Method::GET,
+            host: "example.com".to_string(),
+            path: "/".to_string(),
+            status: Some(200),
+            ms: 5,
+            bytes: 2,
+            redirects: 0,
+            reason: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn ctrl_b_toggles_the_active_tabs_panel_visibility() {
+        let mut app = test_app(1);
+        assert!(
+            app.tabs[0].panel_visible,
+            "a fresh tab starts with the panel visible"
+        );
+
+        app.on_key(ctrl_key('b')).await;
+        assert!(!app.tabs[0].panel_visible);
+
+        app.on_key(ctrl_key('b')).await;
+        assert!(app.tabs[0].panel_visible);
+    }
+
+    #[tokio::test]
+    async fn a_subagents_activity_still_reaches_the_panel_though_not_the_transcript() {
+        let mut app = test_app(1);
+        let session = app.tabs[0].id;
+
+        app.on_session_event(SessionEvent {
+            session,
+            agent: AgentId(1),
+            event: AgentEvent::Activity(net_activity()),
+        });
+
+        assert_eq!(
+            app.tabs[0].panel.network.len(),
+            1,
+            "a subagent's own NetRequest must still fold into this tab's panel"
+        );
+        assert!(
+            app.tabs[0].transcript.is_empty(),
+            "subagent chatter must never inline into the root transcript (§9.9)"
+        );
+    }
+
+    #[tokio::test]
+    async fn activity_on_a_background_tab_marks_it_unread() {
+        let mut app = test_app(2);
+        let background = app.tabs[1].id;
+
+        app.on_session_event(SessionEvent {
+            session: background,
+            agent: AgentId::ROOT,
+            event: AgentEvent::Activity(net_activity()),
+        });
+
+        assert!(app.tabs[1].unread);
+        assert_eq!(app.tabs[1].panel.network.len(), 1);
     }
 }

@@ -36,6 +36,12 @@
 //! `session_cancel` therefore cancels every subagent's token too, one hop down the same tree
 //! §5.4 describes — matching [`crate::subagent`]'s module doc for exactly which cancel paths
 //! this covers and which (`Cancel`, a single turn) it doesn't yet.
+//!
+//! `M11-4`'s activity routing follows the same pattern as `ctx.cancel` above: `ctx.activity`
+//! (§9.3) is overwritten in [`SessionManager::spawn`] with a fresh channel shared by the root
+//! agent and every subagent [`crate::subagent::SubagentRunner`] spawns, and [`drain_activity`]
+//! folds whatever arrives on it into an [`AgentEvent::Activity`] on this session's own
+//! [`SessionEvent`] stream — the same channel every other event already rides.
 
 use std::sync::Arc;
 
@@ -124,6 +130,12 @@ pub enum SessionError {
 /// [`forward`].
 const EVENT_CHANNEL_CAPACITY: usize = 512;
 
+/// Capacity of one session's [`mate_tool_api::ActivitySink`] (§9.3, `M11-4`): shared by the
+/// root agent and every subagent it spawns, so it's sized generously — `try_send` on the
+/// producer side already means a burst drops records rather than blocking a tool call, this
+/// just keeps that burst threshold well above one turn's worth of ordinary tool activity.
+const ACTIVITY_CHANNEL_CAPACITY: usize = 256;
+
 /// Command channel capacity per session: commands are user-paced (one prompt, one cancel),
 /// never a hot path, so a small bound is plenty and keeps a stuck session's queue from
 /// growing unbounded.
@@ -205,12 +217,23 @@ impl SessionManager {
         let session_cancel = CancellationToken::new();
         ctx.cancel = session_cancel.child_token();
 
+        // `M11-4`: `ctx.activity` (and whatever the caller passed for it — `mate-tui`/
+        // `mate-cli`'s builders always pass a throwaway channel with the receiver immediately
+        // dropped, since neither knows the session id this needs) is overwritten here for the
+        // same reason `ctx.cancel` is above. The receiver is drained by a forwarding task below
+        // rather than by `session_task` itself, so it isn't tied to that task's own lifetime —
+        // it ends on its own once every sender (this session's `ToolCtx` and every subagent's)
+        // has dropped.
+        let (activity_tx, activity_rx) = mpsc::channel(ACTIVITY_CHANNEL_CAPACITY);
+        ctx.activity = activity_tx.clone();
+
         let subagents = if spec.agent.may_delegate {
             let runner = Arc::new(SubagentRunner::new(
                 self.backend.clone(),
                 self.http.clone(),
                 id,
                 events_tx.clone(),
+                activity_tx,
                 ctx.root.clone(),
                 ctx.max_output_bytes,
                 &spec.agent,
@@ -220,6 +243,8 @@ impl SessionManager {
         } else {
             None
         };
+
+        tokio::spawn(drain_activity(id, activity_rx, events_tx.clone()));
 
         let built = build_agent(&self.backend, &self.http, &spec.agent, ctx);
 
@@ -443,6 +468,30 @@ pub(crate) fn forward(
     }
 }
 
+/// Drains one session's [`mate_tool_api::ActivitySink`] onto the shared event channel
+/// (§9.3, `M11-4`), wrapping each record as an [`AgentEvent::Activity`] tagged with whichever
+/// agent produced it — root or subagent, both share this one sink (see [`SessionManager::spawn`]
+/// and [`crate::subagent::SubagentRunner`]'s own doc comment for how). Split out from `spawn`
+/// so it's unit-testable without building a real agent. Ends on its own, with no cancellation
+/// needed, once every sender clone (the session's own `ToolCtx` and every subagent's) has
+/// dropped and `recv` returns `None`.
+async fn drain_activity(
+    session: SessionId,
+    mut activity_rx: mpsc::Receiver<(AgentId, mate_tool_api::ToolActivity)>,
+    events_tx: mpsc::Sender<SessionEvent>,
+) {
+    while let Some((agent, activity)) = activity_rx.recv().await {
+        forward(
+            &events_tx,
+            session,
+            AgentEventEnvelope {
+                agent,
+                event: AgentEvent::Activity(activity),
+            },
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -457,6 +506,50 @@ mod tests {
 
     fn http_shared() -> Arc<HttpShared> {
         Arc::new(HttpShared::new(60).unwrap())
+    }
+
+    /// `M11-4`: `drain_activity` must fold every `(AgentId, ToolActivity)` record onto the
+    /// shared channel as a `SessionEvent`, tagged with both the session and whichever agent
+    /// (root or subagent) actually produced it — the mechanism behind "a subagent's file read
+    /// is attributed to that subagent and to the session".
+    #[tokio::test]
+    async fn drain_activity_tags_each_record_with_its_own_agent_and_the_session() {
+        let mut sessions: SlotMap<SessionId, ()> = SlotMap::with_key();
+        let id = sessions.insert(());
+        let (activity_tx, activity_rx) = mpsc::channel(8);
+        let (events_tx, mut events_rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
+
+        let task = tokio::spawn(drain_activity(id, activity_rx, events_tx));
+
+        let root_note = mate_tool_api::ToolActivity::Note {
+            text: "root note".to_string(),
+        };
+        let subagent_note = mate_tool_api::ToolActivity::Note {
+            text: "subagent note".to_string(),
+        };
+        activity_tx
+            .send((AgentId::ROOT, root_note.clone()))
+            .await
+            .unwrap();
+        activity_tx
+            .send((AgentId(1), subagent_note.clone()))
+            .await
+            .unwrap();
+        drop(activity_tx);
+        task.await.unwrap();
+
+        let first = events_rx.recv().await.expect("root record must forward");
+        assert_eq!(first.session, id);
+        assert_eq!(first.agent, AgentId::ROOT);
+        assert_eq!(first.event, AgentEvent::Activity(root_note));
+
+        let second = events_rx
+            .recv()
+            .await
+            .expect("subagent record must forward");
+        assert_eq!(second.session, id);
+        assert_eq!(second.agent, AgentId(1));
+        assert_eq!(second.event, AgentEvent::Activity(subagent_note));
     }
 
     /// A tool that panics on every call — the only reliable way to prove crash isolation

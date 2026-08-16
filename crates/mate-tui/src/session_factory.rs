@@ -84,8 +84,9 @@ pub fn build_spec(
 }
 
 /// Builds the root agent's [`ToolCtx`] for a new session. The activity sink's receiver is
-/// dropped immediately — telemetry has no consumer until `M11`, so every spawn path in this
-/// crate (and `mate-cli`'s `M7`/`M5` wiring before it) does the same thing.
+/// dropped immediately — `SessionManager::spawn` (`M11-4`) overwrites `ctx.activity` with its
+/// own channel before the agent is built, the same way it already overwrites `ctx.cancel`, so
+/// this one is just a placeholder that's never actually read from.
 pub fn build_tool_ctx(root: PathBuf, max_output_bytes: usize) -> ToolCtx {
     let (activity, _activity_rx) = tokio::sync::mpsc::channel(64);
     ToolCtx {

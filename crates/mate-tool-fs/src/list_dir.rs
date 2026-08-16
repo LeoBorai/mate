@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use mate_tool_api::{ToolCtx, ToolFailure};
+use mate_tool_api::{FileOp, ToolActivity, ToolCtx, ToolFailure};
 use rig::tool::{PortableTool, ToolExecutionError};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -64,16 +64,32 @@ impl PortableTool for ListDir {
             )));
         }
 
-        let (entries, truncated) = tokio::task::spawn_blocking(move || list_one_level(&dir))
+        let walk_dir = dir.clone();
+        let (entries, truncated) = tokio::task::spawn_blocking(move || list_one_level(&walk_dir))
             .await
             .map_err(|error| ToolFailure::Other(error.into()))??;
 
+        let entry_count = entries.len();
         let mut body = entries.join("\n");
         if truncated {
             body.push_str(&format!(
                 "\n... [truncated: showing first {ENTRY_CAP} entries]"
             ));
         }
+
+        // `list_dir` touches a directory, not a single file — `path` names the directory
+        // listed, `lines` the entry count, `bytes` the rendered listing size, so the
+        // documents log (§9.8) still gets one coherent row per call.
+        let _ = self.ctx.activity.try_send((
+            self.ctx.agent,
+            ToolActivity::FileTouched {
+                path: dir,
+                op: FileOp::Read,
+                lines: entry_count,
+                bytes: body.len(),
+            },
+        ));
+
         Ok(body)
     }
 }
@@ -125,6 +141,55 @@ mod tests {
             spawner: None,
             activity,
             cancel: CancellationToken::new(),
+        }
+    }
+
+    fn ctx_with_activity(
+        root: PathBuf,
+    ) -> (
+        ToolCtx,
+        tokio::sync::mpsc::Receiver<(mate_tool_api::AgentId, ToolActivity)>,
+    ) {
+        let (activity, rx) = tokio::sync::mpsc::channel(8);
+        (
+            ToolCtx {
+                agent: mate_tool_api::AgentId::ROOT,
+                root,
+                max_output_bytes: 1_000_000,
+                spawner: None,
+                activity,
+                cancel: CancellationToken::new(),
+            },
+            rx,
+        )
+    }
+
+    #[tokio::test]
+    async fn emits_a_file_touched_record_naming_the_directory_and_entry_count() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        std::fs::write(root.join("a.txt"), "").unwrap();
+        std::fs::write(root.join("b.txt"), "").unwrap();
+        let (ctx, mut rx) = ctx_with_activity(root.clone());
+
+        let tool = ListDir::new(ctx);
+        tool.call(ListDirArgs { path: None }).await.unwrap();
+
+        let (agent, activity) = rx.try_recv().expect("a FileTouched record must be emitted");
+        assert_eq!(agent, mate_tool_api::AgentId::ROOT);
+        match activity {
+            ToolActivity::FileTouched {
+                path,
+                op,
+                lines,
+                bytes,
+            } => {
+                assert_eq!(path, root, "path must name the directory listed");
+                assert_eq!(op, FileOp::Read);
+                assert_eq!(lines, 2, "lines must count the listed entries");
+                assert_eq!(bytes, "a.txt\nb.txt".len());
+            }
+            other => panic!("expected FileTouched, got {other:?}"),
         }
     }
 

@@ -63,6 +63,7 @@ pub async fn run(cli: &crate::cli::Cli, config: &Config) -> Result<(), MateError
             title,
             model: defaults.model.clone(),
             provider: provider.clone(),
+            root: root.clone(),
         });
     }
 

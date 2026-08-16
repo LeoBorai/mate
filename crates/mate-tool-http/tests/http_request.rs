@@ -9,7 +9,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use mate_tool_api::{AgentId, ToolCtx, ToolFailure};
+use mate_tool_api::{AgentId, ToolActivity, ToolCtx, ToolFailure};
 use mate_tool_http::{HttpLimits, HttpRequest, HttpRequestArgs, HttpShared};
 use rig::tool::PortableTool;
 use wiremock::matchers::{header_exists, method, path};
@@ -173,6 +173,95 @@ async fn a_model_supplied_authorization_header_never_reaches_the_server() {
         0,
         "a denied header must stop the request before it ever reaches the network"
     );
+}
+
+#[tokio::test]
+async fn a_successful_request_emits_a_net_request_record() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/ok"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string("hi")
+                .insert_header("Content-Type", "text/plain"),
+        )
+        .mount(&server)
+        .await;
+
+    let shared = Arc::new(HttpShared::new(600).unwrap());
+    let (activity, mut rx) = tokio::sync::mpsc::channel(8);
+    let mut c = ctx();
+    c.activity = activity;
+
+    HttpRequest::new(c, shared, true)
+        .call(args(format!("{}/ok", server.uri())))
+        .await
+        .unwrap();
+
+    let (agent, record) = rx.try_recv().expect("a NetRequest record must be emitted");
+    assert_eq!(agent, AgentId::ROOT);
+    match record {
+        ToolActivity::NetRequest {
+            status,
+            bytes,
+            redirects,
+            reason,
+            ..
+        } => {
+            assert_eq!(status, Some(200));
+            assert_eq!(bytes, "hi".len(), "bytes must be the downloaded body size");
+            assert_eq!(redirects, 0);
+            assert!(
+                reason.is_none(),
+                "a request that reached a server has no block reason"
+            );
+        }
+        other => panic!("expected NetRequest, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_blocked_private_ip_attempt_emits_a_net_request_record_with_the_reason() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/start"))
+        .respond_with(
+            ResponseTemplate::new(302).insert_header("Location", "http://169.254.169.254/secret"),
+        )
+        .mount(&server)
+        .await;
+
+    let shared = Arc::new(HttpShared::new(600).unwrap());
+    let (activity, mut rx) = tokio::sync::mpsc::channel(8);
+    let mut c = ctx();
+    c.activity = activity;
+
+    let err = HttpRequest::new(c, shared, true)
+        .call(args(format!("{}/start", server.uri())))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ToolFailure::Denied(_)));
+
+    // Only the blocked hop is recorded — the earlier, successful hop to the mock server
+    // itself never completes the call, so it has nothing final to report yet.
+    let (agent, record) = rx.try_recv().expect("the blocked hop must emit a record");
+    assert_eq!(agent, AgentId::ROOT);
+    match record {
+        ToolActivity::NetRequest {
+            status,
+            host,
+            reason,
+            ..
+        } => {
+            assert_eq!(status, None, "a blocked request never reached a server");
+            assert_eq!(host, "169.254.169.254");
+            assert!(
+                reason.unwrap().contains("link-local"),
+                "reason must name why the address was refused"
+            );
+        }
+        other => panic!("expected NetRequest, got {other:?}"),
+    }
 }
 
 #[tokio::test]
