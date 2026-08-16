@@ -632,6 +632,7 @@ mod tests {
     use mate_core::backend::Backend;
     use mate_core::config::{AgentSpec, DelegationPolicy, HttpPolicy, SessionSpec};
     use mate_tool_api::ToolCtx;
+    use mate_tool_http::HttpShared;
     use tokio_util::sync::CancellationToken;
 
     use super::*;
@@ -688,7 +689,8 @@ mod tests {
     /// using this must run under `#[tokio::test]` even when it never itself awaits anything.
     fn test_app(n: usize) -> App {
         let backend = Arc::new(Backend::huggingface("dummy-key", None, None).unwrap());
-        let (mut manager, events_rx) = SessionManager::new(backend, 8);
+        let http = Arc::new(HttpShared::new(60).unwrap());
+        let (mut manager, events_rx) = SessionManager::new(backend, http, 8);
         let mut sessions = Vec::new();
         for i in 0..n {
             let handle = manager.spawn(&spec(&format!("s{i}")), ctx()).unwrap();

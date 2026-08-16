@@ -6,9 +6,11 @@
 //! so the same handle attaches to either of [`crate::backend::Backend`]'s provider paths without
 //! rebuilding the toolset per variant.
 //!
-//! Only `mate-tool-fs`'s tools exist today (`M3`) and are attached unconditionally — nothing in
-//! `AgentSpec` disables filesystem access. `M10`'s `http_request` attaches here too once that
-//! crate ships a real `Tool` impl, gated on `spec.http.enabled`. `M9-3`'s `spawn_agent` attaches
+//! `mate-tool-fs`'s tools (`M3`) are attached unconditionally — nothing in `AgentSpec` disables
+//! filesystem access. `M10`'s `http_request` attaches whenever `http_policy.enabled`, built
+//! against the process-wide `HttpShared` every agent in the process shares (§5.3) and narrowed
+//! to `http_policy.policy == HttpAccessPolicy::AllowLocalhost` the same way every other
+//! per-agent narrowing in this function works. `M9-3`'s `spawn_agent` attaches
 //! whenever `ctx.spawner.is_some()` — `SessionManager::spawn` (`M9-2`) only ever sets a spawner
 //! when the agent's spec has `may_delegate: true`, so this one check is equivalent to gating on
 //! that flag directly, and it's also what makes a subagent's own `ToolCtx` (always built with
@@ -21,16 +23,32 @@
 //! `if condition { builder = builder.tool(..) }` is sufficient on its own, with no separate
 //! call-time check needed.
 
+use std::sync::Arc;
+
 use mate_tool_api::ToolCtx;
+use mate_tool_http::HttpShared;
 use rig::tool::server::{ToolServer, ToolServerHandle};
 
+use crate::config::{HttpAccessPolicy, HttpPolicy};
 use crate::preamble::ToolDescriptor;
 
-pub fn build_toolset(ctx: ToolCtx) -> ToolServerHandle {
+pub fn build_toolset(
+    ctx: ToolCtx,
+    http_policy: &HttpPolicy,
+    http_shared: Arc<HttpShared>,
+) -> ToolServerHandle {
     let mut builder = ToolServer::new()
         .tool(mate_tool_fs::ReadFile::new(ctx.clone()))
         .tool(mate_tool_fs::ListDir::new(ctx.clone()))
         .tool(mate_tool_fs::FindFiles::new(ctx.clone()));
+    if http_policy.enabled {
+        let allow_localhost = http_policy.policy == HttpAccessPolicy::AllowLocalhost;
+        builder = builder.tool(mate_tool_http::HttpRequest::new(
+            ctx.clone(),
+            http_shared,
+            allow_localhost,
+        ));
+    }
     if ctx.spawner.is_some() {
         builder = builder.tool(mate_tool_agent::SpawnAgent::new(ctx));
     }
@@ -39,11 +57,12 @@ pub fn build_toolset(ctx: ToolCtx) -> ToolServerHandle {
 
 /// Descriptors for the tools [`build_toolset`] attaches, for preamble rendering (§4, `M1-4`)
 /// until the promised "derive from the real `ToolSet`" wiring lands — kept next to
-/// `build_toolset` so the two lists can't drift apart. `may_delegate` must match whatever
-/// `build_toolset` was (or, for a not-yet-built agent, will be) called with, the same way a
-/// caller already threads one `may_delegate` value into both `AgentSpec::may_delegate` and this
-/// function (`crate::subagent` does the same for a subagent's own preamble).
-pub fn tool_descriptors(may_delegate: bool) -> Vec<ToolDescriptor> {
+/// `build_toolset` so the two lists can't drift apart. `may_delegate`/`http_enabled` must match
+/// whatever `build_toolset` was (or, for a not-yet-built agent, will be) called with, the same
+/// way a caller already threads one `may_delegate` value into both `AgentSpec::may_delegate` and
+/// this function (`crate::subagent` does the same for a subagent's own preamble and its own
+/// narrowed `http.enabled`).
+pub fn tool_descriptors(may_delegate: bool, http_enabled: bool) -> Vec<ToolDescriptor> {
     let mut descriptors = vec![
         ToolDescriptor::new(
             "read_file",
@@ -61,6 +80,17 @@ pub fn tool_descriptors(may_delegate: bool) -> Vec<ToolDescriptor> {
              Respects .gitignore.",
         ),
     ];
+    if http_enabled {
+        descriptors.push(ToolDescriptor::new(
+            "http_request",
+            "Fetch a URL over HTTP or HTTPS. Only GET and HEAD are supported; mutating \
+             methods are refused. Requests to private, loopback, link-local, and other \
+             non-public addresses are blocked. HTML responses are converted to readable text \
+             and JSON is pretty-printed by default — set render_text to false for the raw \
+             body. Output leads with the status, final URL (after any redirects), content \
+             type, and redirect count.",
+        ));
+    }
     if may_delegate {
         descriptors.push(ToolDescriptor::new(
             "spawn_agent",
@@ -94,6 +124,17 @@ mod tests {
         }
     }
 
+    fn http_shared() -> Arc<HttpShared> {
+        Arc::new(HttpShared::new(60).unwrap())
+    }
+
+    fn http_policy(enabled: bool) -> HttpPolicy {
+        HttpPolicy {
+            enabled,
+            ..HttpPolicy::default()
+        }
+    }
+
     /// Never actually called in this module's tests — only its presence in `ctx.spawner`
     /// matters, to prove `spawn_agent` attaches whenever a spawner is set.
     struct StubSpawner;
@@ -106,9 +147,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn attaches_every_fs_tool_but_not_spawn_agent_without_a_spawner() {
+    async fn attaches_every_fs_tool_and_http_but_not_spawn_agent_without_a_spawner() {
         let tmp = tempfile::tempdir().unwrap();
-        let handle = build_toolset(ctx(tmp.path().to_path_buf()));
+        let handle = build_toolset(
+            ctx(tmp.path().to_path_buf()),
+            &http_policy(true),
+            http_shared(),
+        );
 
         let mut names: Vec<String> = handle
             .get_tool_defs(None)
@@ -121,9 +166,30 @@ mod tests {
 
         assert_eq!(
             names,
-            vec!["find_files", "list_dir", "read_file"],
+            vec!["find_files", "http_request", "list_dir", "read_file"],
             "spawn_agent must be absent from the toolset when ctx.spawner is None"
         );
+    }
+
+    #[tokio::test]
+    async fn does_not_attach_http_request_when_the_policy_disables_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let handle = build_toolset(
+            ctx(tmp.path().to_path_buf()),
+            &http_policy(false),
+            http_shared(),
+        );
+
+        let mut names: Vec<String> = handle
+            .get_tool_defs(None)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|def| def.name)
+            .collect();
+        names.sort();
+
+        assert_eq!(names, vec!["find_files", "list_dir", "read_file"]);
     }
 
     #[tokio::test]
@@ -131,7 +197,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mut c = ctx(tmp.path().to_path_buf());
         c.spawner = Some(Arc::new(StubSpawner) as Arc<dyn SubagentSpawner>);
-        let handle = build_toolset(c);
+        let handle = build_toolset(c, &http_policy(true), http_shared());
 
         let mut names: Vec<String> = handle
             .get_tool_defs(None)
@@ -144,32 +210,57 @@ mod tests {
 
         assert_eq!(
             names,
-            vec!["find_files", "list_dir", "read_file", "spawn_agent"],
+            vec![
+                "find_files",
+                "http_request",
+                "list_dir",
+                "read_file",
+                "spawn_agent"
+            ],
             "spawn_agent must attach whenever ctx.spawner is Some, regardless of caller"
         );
     }
 
     #[test]
-    fn tool_descriptors_match_the_attached_toolset_without_delegation() {
-        let descriptors = tool_descriptors(false);
+    fn tool_descriptors_match_the_attached_toolset_without_delegation_or_http() {
+        let descriptors = tool_descriptors(false, false);
         let mut names: Vec<&str> = descriptors.iter().map(|t| t.name.as_str()).collect();
         names.sort();
         assert_eq!(
             names,
             vec!["find_files", "list_dir", "read_file"],
-            "descriptors must match build_toolset's own attachment set for may_delegate: false"
+            "descriptors must match build_toolset's own attachment set for may_delegate: false, \
+             http_enabled: false"
+        );
+    }
+
+    #[test]
+    fn tool_descriptors_include_http_request_when_enabled() {
+        let descriptors = tool_descriptors(false, true);
+        let mut names: Vec<&str> = descriptors.iter().map(|t| t.name.as_str()).collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec!["find_files", "http_request", "list_dir", "read_file"]
         );
     }
 
     #[test]
     fn tool_descriptors_include_spawn_agent_when_delegation_is_enabled() {
-        let descriptors = tool_descriptors(true);
+        let descriptors = tool_descriptors(true, true);
         let mut names: Vec<&str> = descriptors.iter().map(|t| t.name.as_str()).collect();
         names.sort();
         assert_eq!(
             names,
-            vec!["find_files", "list_dir", "read_file", "spawn_agent"],
-            "descriptors must match build_toolset's own attachment set for may_delegate: true"
+            vec![
+                "find_files",
+                "http_request",
+                "list_dir",
+                "read_file",
+                "spawn_agent"
+            ],
+            "descriptors must match build_toolset's own attachment set for may_delegate: true, \
+             http_enabled: true"
         );
     }
 }

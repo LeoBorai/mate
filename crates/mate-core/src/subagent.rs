@@ -39,6 +39,7 @@ use mate_tool_api::{
     AgentId, SubagentOutcome, SubagentReport, SubagentRequest, SubagentSpawner, ToolCtx,
     ToolFailure, ToolProfile, truncate_with_notice,
 };
+use mate_tool_http::HttpShared;
 use rig::agent::Agent;
 use rig::completion::{CompletionModel, GetTokenUsage};
 use tokio::sync::{Semaphore, mpsc};
@@ -57,6 +58,7 @@ use crate::toolset::tool_descriptors;
 /// instances.
 pub struct SubagentRunner {
     backend: Arc<Backend>,
+    http_shared: Arc<HttpShared>,
     session: SessionId,
     events_tx: mpsc::Sender<SessionEvent>,
     root: PathBuf,
@@ -88,6 +90,7 @@ impl SubagentRunner {
     /// as sensible defaults, narrowed per §7.4 rather than reopened.
     pub fn new(
         backend: Arc<Backend>,
+        http_shared: Arc<HttpShared>,
         session: SessionId,
         events_tx: mpsc::Sender<SessionEvent>,
         root: PathBuf,
@@ -97,6 +100,7 @@ impl SubagentRunner {
         let max_concurrent = root_agent.delegation.max_concurrent.max(1);
         Self {
             backend,
+            http_shared,
             session,
             events_tx,
             root,
@@ -128,6 +132,7 @@ impl SubagentRunner {
     fn nested(&self) -> Arc<SubagentRunner> {
         Arc::new(SubagentRunner {
             backend: self.backend.clone(),
+            http_shared: self.http_shared.clone(),
             session: self.session,
             events_tx: self.events_tx.clone(),
             root: self.root.clone(),
@@ -205,15 +210,15 @@ impl SubagentSpawner for SubagentRunner {
             .unwrap_or(self.policy.subagent_max_turns)
             .clamp(1, self.policy.subagent_max_turns.max(1));
 
+        let mut http = self.http.clone();
+        http.enabled = self.http.enabled && matches!(request.tools, ToolProfile::ReadOnlyNet);
+
         let preamble = render_preamble(
             PreambleRole::Subagent,
             &self.root,
             std::env::consts::OS,
-            &tool_descriptors(may_delegate),
+            &tool_descriptors(may_delegate, http.enabled),
         );
-
-        let mut http = self.http.clone();
-        http.enabled = self.http.enabled && matches!(request.tools, ToolProfile::ReadOnlyNet);
 
         let spec = AgentSpec {
             model: self
@@ -234,7 +239,7 @@ impl SubagentSpawner for SubagentRunner {
 
         let deadline = Duration::from_secs(self.policy.wall_clock_timeout_secs);
         let report_max_bytes = self.policy.report_max_bytes;
-        let built = build_agent(&self.backend, &spec, ctx);
+        let built = build_agent(&self.backend, &self.http_shared, &spec, ctx);
 
         let report = match built {
             BuiltAgent::HuggingFace(agent) => {
@@ -411,6 +416,7 @@ mod tests {
         let backend = Arc::new(
             Backend::huggingface("dummy-key", None, None).expect("offline client construction"),
         );
+        let http_shared = Arc::new(HttpShared::new(60).unwrap());
         let (events_tx, events_rx) = mpsc::channel(64);
         let spec = AgentSpec {
             model: "org/root-model".to_string(),
@@ -427,6 +433,7 @@ mod tests {
         (
             SubagentRunner::new(
                 backend,
+                http_shared,
                 session_id(),
                 events_tx,
                 PathBuf::from("."),

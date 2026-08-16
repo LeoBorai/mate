@@ -9,6 +9,7 @@ use std::sync::Arc;
 use mate_core::backend::Backend;
 use mate_core::provider_error::ProviderError;
 use mate_core::session::SessionManager;
+use mate_tool_http::HttpShared;
 use mate_tui::{InitialSession, SessionDefaults};
 
 use crate::config::{Config, api_token};
@@ -40,7 +41,12 @@ pub async fn run(cli: &crate::cli::Cli, config: &Config) -> Result<(), MateError
         max_output_bytes: config.tools.max_output_bytes,
     };
 
-    let (mut manager, events_rx) = SessionManager::new(Arc::new(backend), config.max_sessions);
+    let http = Arc::new(
+        HttpShared::new(config.http.rate_limit_per_host_per_min)
+            .map_err(|err| MateError::Other(anyhow::anyhow!(err)))?,
+    );
+    let (mut manager, events_rx) =
+        SessionManager::new(Arc::new(backend), http, config.max_sessions);
     let provider = defaults.provider_label();
 
     let mut sessions = Vec::with_capacity(roots.len());

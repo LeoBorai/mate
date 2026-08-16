@@ -4673,6 +4673,7 @@ dependencies = [
  "figment",
  "mate-core",
  "mate-tool-api",
+ "mate-tool-http",
  "mate-tui",
  "serde",
  "tempfile",
@@ -4765,6 +4766,8 @@ dependencies = [
 name = "mate-tool-http"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "dashmap",
  "governor",
  "hickory-resolver",
  "html2text",
@@ -4775,7 +4778,9 @@ dependencies = [
  "rig",
  "schemars 1.2.2",
  "serde",
+ "serde_json",
  "tokio",
+ "tokio-util",
  "url",
  "wiremock",
 ]
@@ -4789,6 +4794,7 @@ dependencies = [
  "futures",
  "mate-core",
  "mate-tool-api",
+ "mate-tool-http",
  "ratatui",
  "ratatui-textarea",
  "tempfile",

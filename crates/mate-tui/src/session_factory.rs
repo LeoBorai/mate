@@ -58,7 +58,7 @@ pub fn build_spec(
         PreambleRole::Root,
         root,
         std::env::consts::OS,
-        &tool_descriptors(defaults.delegation.enabled),
+        &tool_descriptors(defaults.delegation.enabled, http_enabled),
     );
 
     let agent = AgentSpec {

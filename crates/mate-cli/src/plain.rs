@@ -12,6 +12,8 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use std::sync::Arc;
+
 use mate_core::agent::{BuiltAgent, build_agent};
 use mate_core::backend::Backend;
 use mate_core::config::AgentSpec;
@@ -20,6 +22,7 @@ use mate_core::provider_error::ProviderError;
 use mate_core::streaming::{AgentEvent, AgentEventEnvelope};
 use mate_core::toolset::tool_descriptors;
 use mate_tool_api::{AgentId, ToolCtx};
+use mate_tool_http::HttpShared;
 use tokio::io::AsyncBufReadExt;
 use tokio_util::sync::CancellationToken;
 
@@ -53,6 +56,10 @@ pub async fn run(cli: &Cli, config: &Config) -> Result<(), MateError> {
         .map_err(|err| classify_verify_error(ProviderError::classify(&err)))?;
 
     let workspace_root = resolve_workspace_root(cli)?;
+    let http = Arc::new(
+        HttpShared::new(config.http.rate_limit_per_host_per_min)
+            .map_err(|err| MateError::Other(anyhow::anyhow!(err)))?,
+    );
     // Always `false`: this frontend never routes through `mate_core::session::SessionManager`
     // (see this module's doc comment), so there's no `SubagentSpawner` to give `ctx.spawner`
     // below — advertising `spawn_agent` here would tell the model about a tool
@@ -61,7 +68,7 @@ pub async fn run(cli: &Cli, config: &Config) -> Result<(), MateError> {
         PreambleRole::Root,
         &workspace_root,
         std::env::consts::OS,
-        &tool_descriptors(false),
+        &tool_descriptors(false, config.http.enabled),
     );
 
     let spec = AgentSpec {
@@ -89,7 +96,7 @@ pub async fn run(cli: &Cli, config: &Config) -> Result<(), MateError> {
         activity,
         cancel: cancel.clone(),
     };
-    let agent = build_agent(&backend, &spec, ctx);
+    let agent = build_agent(&backend, &http, &spec, ctx);
 
     // `M5-4`: Ctrl+C cancels the in-flight turn, which unwinds the loop below cleanly rather
     // than killing the process mid-write. Aborted once `run` returns so a normal exit doesn't
