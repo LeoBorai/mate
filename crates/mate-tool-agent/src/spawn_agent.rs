@@ -215,8 +215,8 @@ mod tests {
 
         let out = tool.call(args("deps")).await.unwrap();
         assert_eq!(
-            out,
-            "subagent `deps` — completed in 6 turns, 14.2k tokens\n\nfound three call sites"
+            out, "subagent `deps` — completed in 6 turns, 14.2k tokens\n\nfound three call sites",
+            "rendered report must follow §7.5's format exactly: label, turns, tokens, summary"
         );
     }
 
@@ -244,7 +244,8 @@ mod tests {
         let err = tool.call(args("deps")).await.unwrap_err();
         assert_eq!(
             err.to_string(),
-            "denied: delegation depth limit reached (max_depth=1)"
+            "denied: delegation depth limit reached (max_depth=1)",
+            "the tool must forward the spawner's ToolFailure text unmodified for the model to read"
         );
     }
 
@@ -263,16 +264,35 @@ mod tests {
         tool.call(args("deps")).await.unwrap();
 
         let seen = spawner.seen.lock().unwrap().take().unwrap();
-        assert_eq!(seen.label, "deps");
-        assert_eq!(seen.task, "investigate the thing");
-        assert_eq!(seen.tools, ToolProfile::ReadOnly);
+        assert_eq!(seen.label, "deps", "label must reach the spawner unchanged");
+        assert_eq!(
+            seen.task, "investigate the thing",
+            "task must reach the spawner unchanged — it's the subagent's entire input"
+        );
+        assert_eq!(
+            seen.tools,
+            ToolProfile::ReadOnly,
+            "omitting `tools` in the args must default to ReadOnly"
+        );
     }
 
     #[test]
     fn format_tokens_switches_to_k_notation_past_one_thousand() {
-        assert_eq!(format_tokens(999), "999");
-        assert_eq!(format_tokens(1000), "1.0k");
-        assert_eq!(format_tokens(14_200), "14.2k");
+        assert_eq!(
+            format_tokens(999),
+            "999",
+            "below 1000 renders as a bare integer"
+        );
+        assert_eq!(
+            format_tokens(1000),
+            "1.0k",
+            "1000 is the first value to switch to k-notation"
+        );
+        assert_eq!(
+            format_tokens(14_200),
+            "14.2k",
+            "one decimal place, matching §7.5's report example"
+        );
     }
 
     /// `M9-3`'s acceptance criterion: both the tool description and the `task` argument's own

@@ -558,13 +558,26 @@ mod tests {
             report.outcome,
             SubagentOutcome::Completed {
                 summary: "found it".to_string()
-            }
+            },
+            "the model's final text becomes the report's summary verbatim, untruncated"
         );
-        assert_eq!(report.turns, 2);
-        assert_eq!(report.usage.total_tokens, 7);
+        assert_eq!(
+            report.turns, 2,
+            "one completion call per mock stream turn — tool_call round, then text round"
+        );
+        // `FinalResponse`'s usage is the whole multi-turn interaction's total, not just the
+        // last round's — 5 (first completion call) + 7 (second) = 12.
+        assert_eq!(
+            report.usage.total_tokens, 12,
+            "reported usage must be the FinalResponse total, summed across both rounds"
+        );
 
         let first = events.try_recv().expect("spawned event");
-        assert_eq!(first.agent, AgentId(1));
+        assert_eq!(
+            first.agent,
+            AgentId(1),
+            "the spawned event must be tagged with the subagent's own id, not AgentId::ROOT"
+        );
         assert!(matches!(first.event, AgentEvent::SubagentSpawned { .. }));
     }
 
@@ -639,7 +652,11 @@ mod tests {
         .await
         .expect("the wall-clock timeout should stop the turn promptly, not hang on it");
 
-        assert_eq!(report.outcome, SubagentOutcome::TimedOut);
+        assert_eq!(
+            report.outcome,
+            SubagentOutcome::TimedOut,
+            "a subagent still running past its wall-clock deadline must report TimedOut"
+        );
     }
 
     #[tokio::test]
@@ -679,7 +696,12 @@ mod tests {
             }
         };
 
-        assert_eq!(report.outcome, SubagentOutcome::Cancelled);
+        assert_eq!(
+            report.outcome,
+            SubagentOutcome::Cancelled,
+            "cancelling the parent's token must propagate to the subagent's child token \
+             (§7.3's token tree) and report Cancelled, not hang or time out"
+        );
     }
 
     // --- `M9-8`: non-addressability ---------------------------------------------------------
@@ -708,9 +730,17 @@ mod tests {
         .await;
 
         let requests = model.requests();
-        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests.len(),
+            1,
+            "a subagent's single turn must be exactly one model request, never a retry loop"
+        );
         // Exactly one message went to the model: the task itself, nothing threaded in from
         // any parent conversation.
-        assert_eq!(requests[0].chat_history.len(), 1);
+        assert_eq!(
+            requests[0].chat_history.len(),
+            1,
+            "§7.6: the subagent's whole input is preamble + task — no parent history leaked in"
+        );
     }
 }

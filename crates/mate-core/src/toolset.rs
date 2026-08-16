@@ -119,7 +119,11 @@ mod tests {
             .collect();
         names.sort();
 
-        assert_eq!(names, vec!["find_files", "list_dir", "read_file"]);
+        assert_eq!(
+            names,
+            vec!["find_files", "list_dir", "read_file"],
+            "spawn_agent must be absent from the toolset when ctx.spawner is None"
+        );
     }
 
     #[tokio::test]
@@ -140,7 +144,8 @@ mod tests {
 
         assert_eq!(
             names,
-            vec!["find_files", "list_dir", "read_file", "spawn_agent"]
+            vec!["find_files", "list_dir", "read_file", "spawn_agent"],
+            "spawn_agent must attach whenever ctx.spawner is Some, regardless of caller"
         );
     }
 
@@ -149,7 +154,11 @@ mod tests {
         let descriptors = tool_descriptors(false);
         let mut names: Vec<&str> = descriptors.iter().map(|t| t.name.as_str()).collect();
         names.sort();
-        assert_eq!(names, vec!["find_files", "list_dir", "read_file"]);
+        assert_eq!(
+            names,
+            vec!["find_files", "list_dir", "read_file"],
+            "descriptors must match build_toolset's own attachment set for may_delegate: false"
+        );
     }
 
     #[test]
@@ -159,7 +168,8 @@ mod tests {
         names.sort();
         assert_eq!(
             names,
-            vec!["find_files", "list_dir", "read_file", "spawn_agent"]
+            vec!["find_files", "list_dir", "read_file", "spawn_agent"],
+            "descriptors must match build_toolset's own attachment set for may_delegate: true"
         );
     }
 }

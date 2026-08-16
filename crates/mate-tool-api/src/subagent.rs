@@ -87,10 +87,15 @@ mod tests {
 
     #[test]
     fn no_value_and_read_only_both_parse_to_the_default_profile() {
-        assert_eq!(ToolProfile::try_from(None).unwrap(), ToolProfile::ReadOnly);
+        assert_eq!(
+            ToolProfile::try_from(None).unwrap(),
+            ToolProfile::ReadOnly,
+            "omitting `tools` must default to the same profile as an explicit \"read_only\""
+        );
         assert_eq!(
             ToolProfile::try_from(Some("read_only")).unwrap(),
-            ToolProfile::ReadOnly
+            ToolProfile::ReadOnly,
+            "\"read_only\" is the documented default profile string"
         );
     }
 
@@ -98,7 +103,8 @@ mod tests {
     fn read_only_net_parses() {
         assert_eq!(
             ToolProfile::try_from(Some("read_only_net")).unwrap(),
-            ToolProfile::ReadOnlyNet
+            ToolProfile::ReadOnlyNet,
+            "\"read_only_net\" must parse to the net-enabled profile"
         );
     }
 
