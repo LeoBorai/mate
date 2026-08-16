@@ -1,6 +1,6 @@
 //! Wires the default frontend (`M7`): the same backend/agent setup `plain.rs` uses, but routed
 //! through `mate_core::session::SessionManager` and `mate_tui::run` instead of a bare `Agent`.
-//! Tabs and the side panel aren't here yet (`M8`/`M12`) — `M7` spawns exactly one session.
+//! Tabs aren't here yet (`M8`) — `M7` spawns exactly one session.
 
 use std::sync::Arc;
 
@@ -76,7 +76,18 @@ pub async fn run(cli: &crate::cli::Cli, config: &Config) -> Result<(), MateError
         .map_err(|err| MateError::Other(anyhow::anyhow!(err)))?;
     let session_id = handle.id;
 
-    mate_tui::run(handle, session_id, events_rx)
-        .await
-        .map_err(|err| MateError::Io(anyhow::anyhow!(err)))
+    let provider = config
+        .sub_provider
+        .clone()
+        .unwrap_or_else(|| "huggingface".to_string());
+
+    mate_tui::run(
+        handle,
+        session_id,
+        events_rx,
+        config.model.clone(),
+        provider,
+    )
+    .await
+    .map_err(|err| MateError::Io(anyhow::anyhow!(err)))
 }

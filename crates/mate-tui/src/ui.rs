@@ -18,6 +18,8 @@ const MAX_INPUT_HEIGHT: u16 = 10;
 /// Fixed width reserved for a rendered line's role prefix (`you ›`, `agent ›`, a tool glyph),
 /// so wrapped body text lines up under the first line regardless of which prefix produced it.
 const PREFIX_WIDTH: u16 = 8;
+/// Width of the left model/provider panel, borders included.
+const MODEL_PANEL_WIDTH: u16 = 24;
 
 pub(crate) struct View<'a> {
     pub(crate) transcript: &'a Transcript,
@@ -25,16 +27,33 @@ pub(crate) struct View<'a> {
     pub(crate) input: &'a InputBox,
     pub(crate) scroll: usize,
     pub(crate) running_turn: bool,
+    pub(crate) model: &'a str,
+    pub(crate) provider: &'a str,
 }
 
 pub(crate) fn draw(f: &mut Frame<'_>, view: &mut View<'_>) {
     let area = f.area();
+    let [panel_area, main_area] =
+        Layout::horizontal([Constraint::Length(MODEL_PANEL_WIDTH), Constraint::Min(0)]).areas(area);
+
     let input_height = input_height(view);
     let [transcript_area, input_area] =
-        Layout::vertical([Constraint::Min(0), Constraint::Length(input_height)]).areas(area);
+        Layout::vertical([Constraint::Min(0), Constraint::Length(input_height)]).areas(main_area);
 
+    render_model_panel(f, panel_area, view);
     render_transcript(f, transcript_area, view);
     render_input(f, input_area, view);
+}
+
+fn render_model_panel(f: &mut Frame<'_>, area: Rect, view: &View<'_>) {
+    let block = Block::default().borders(Borders::ALL).title(" model ");
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let lines = vec![
+        Line::from(format!("Model: {}", view.model)),
+        Line::from(format!("Provider: {}", view.provider)),
+    ];
+    f.render_widget(Paragraph::new(lines), inner);
 }
 
 fn input_height(view: &View<'_>) -> u16 {
@@ -162,9 +181,11 @@ mod tests {
             input: &input,
             scroll: 0,
             running_turn: false,
+            model: "Qwen3-Coder-30B",
+            provider: "huggingface",
         };
 
-        let backend = TestBackend::new(60, 14);
+        let backend = TestBackend::new(84, 14);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| draw(f, &mut view)).unwrap();
 

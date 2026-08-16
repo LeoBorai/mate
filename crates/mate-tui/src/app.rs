@@ -34,6 +34,8 @@ pub struct App {
     quit_armed: bool,
     dirty: bool,
     should_quit: bool,
+    model: String,
+    provider: String,
 }
 
 impl App {
@@ -41,6 +43,8 @@ impl App {
         handle: SessionHandle,
         session_id: SessionId,
         events: mpsc::Receiver<SessionEvent>,
+        model: String,
+        provider: String,
     ) -> Self {
         Self {
             handle,
@@ -54,6 +58,8 @@ impl App {
             quit_armed: false,
             dirty: true,
             should_quit: false,
+            model,
+            provider,
         }
     }
 
@@ -64,6 +70,8 @@ impl App {
             input: &self.input,
             scroll: self.scroll,
             running_turn: self.running_turn,
+            model: &self.model,
+            provider: &self.provider,
         }
     }
 
@@ -161,9 +169,11 @@ pub async fn run(
     handle: SessionHandle,
     session_id: SessionId,
     events: mpsc::Receiver<SessionEvent>,
+    model: String,
+    provider: String,
 ) -> Result<(), TuiError> {
     let mut terminal = ratatui::try_init()?;
-    let mut app = App::new(handle, session_id, events);
+    let mut app = App::new(handle, session_id, events, model, provider);
     let result = run_loop(&mut app, &mut terminal).await;
     ratatui::restore();
     let _ = app.handle.send(SessionCmd::Shutdown).await;

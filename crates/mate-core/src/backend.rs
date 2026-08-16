@@ -137,7 +137,10 @@ impl Backend {
                 hub_verify_client: Some(hub_client),
                 ..
             } => {
-                tracing::info!(url = HF_HUB_WHOAMI_URL, "verifying API token against the hub");
+                tracing::info!(
+                    url = HF_HUB_WHOAMI_URL,
+                    "verifying API token against the hub"
+                );
                 verify_huggingface_hub_token(hub_client).await
             }
             Self::HuggingFace { client, .. } => {
