@@ -152,11 +152,15 @@ impl PortableTool for HttpRequest {
 
         let status = response.status();
         let final_url = response.url().clone();
+        // A missing header is common on empty bodies (redirects that hit the hop cap, HEAD
+        // responses) and isn't the server naming a binary type — default to something
+        // renderable, not `application/octet-stream`, or every such response gets refused for
+        // a type the server never actually declared.
         let content_type = response
             .headers()
             .get(reqwest::header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
-            .unwrap_or("application/octet-stream")
+            .unwrap_or("text/plain")
             .to_string();
 
         if !render::is_renderable(&content_type) {
