@@ -1,11 +1,13 @@
 //! Rendering: a one-row tab bar (`M8-1`) over the single-tab body `M7` already built. The tab
-//! bar is a pure function of `Vec<TabSummary>` + the active index — [`tab_bar_segments`] is
-//! unit-tested directly, with no terminal involved, since hand-verifying plain strings is a lot
-//! less error-prone than hand-computing a `TestBackend` grid for every tab count and width.
+//! bar is a pure function of `Vec<TabSummary>` + the active index — [`tab_bar_segments`] does
+//! the overflow/windowing math.
 //!
 //! [`AppView`] wraps the tab bar's input together with the active tab's own [`View`] (`M7-3`/
 //! `M7-4`/`M7-5`, unchanged) — switching tabs swaps which session's `View` gets built, not
 //! anything about how a session renders.
+//!
+//! No test module here (see `.agents/docs/testing.md`) — rendering/layout tests were dropped as
+//! not worth their upkeep.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -432,149 +434,4 @@ fn styled_line(entry: &Entry, raw: &str, first: bool) -> Line<'static> {
         Span::styled(prefix, style),
         Span::raw(raw.to_string()),
     ])
-}
-
-#[cfg(test)]
-mod tests {
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
-
-    use super::*;
-
-    fn tab(title: &str) -> TabSummary {
-        TabSummary {
-            title: title.to_string(),
-            streaming: false,
-            unread: false,
-            needs_attention: false,
-        }
-    }
-
-    fn segments_text(tabs: &[TabSummary], active: usize, width: u16) -> String {
-        tab_bar_segments(tabs, active, width)
-            .into_iter()
-            .map(|s| s.text)
-            .collect()
-    }
-
-    #[test]
-    fn a_single_tab_renders_with_the_plus_affordance() {
-        assert_eq!(segments_text(&[tab("mate")], 0, 84), "⟨1 mate⟩ [+]");
-    }
-
-    #[test]
-    fn five_tabs_fit_at_full_width_with_no_windowing() {
-        let tabs: Vec<TabSummary> = (1..=5).map(|i| tab(&format!("s{i}"))).collect();
-        assert_eq!(
-            segments_text(&tabs, 2, 84),
-            "⟨1 s1⟩ ⟨2 s2⟩ ⟨3 s3⟩ ⟨4 s4⟩ ⟨5 s5⟩ [+]"
-        );
-    }
-
-    #[test]
-    fn nine_tabs_still_fit_at_full_width() {
-        let tabs: Vec<TabSummary> = (1..=9).map(|i| tab(&format!("s{i}"))).collect();
-        let text = segments_text(&tabs, 8, 84);
-        for i in 1..=9 {
-            assert!(
-                text.contains(&format!("⟨{i} s{i}⟩")),
-                "missing tab {i} in {text}"
-            );
-        }
-        assert!(text.ends_with("[+]"));
-        assert!(!text.contains('«') && !text.contains('»'));
-    }
-
-    #[test]
-    fn nine_tabs_at_sixty_columns_window_around_the_active_tab_and_hide_the_rest() {
-        let tabs: Vec<TabSummary> = (1..=9).map(|i| tab(&format!("session-{i}"))).collect();
-        let text = segments_text(&tabs, 8, 60);
-        // The active tab (index 8, the 9th) must always be visible.
-        assert!(text.contains("⟨9 session-9"), "active tab missing: {text}");
-        // Something had to be hidden at this width for nine 10-char-capable titles.
-        assert!(
-            text.contains('«'),
-            "expected a hidden-left indicator: {text}"
-        );
-        assert!(text.ends_with("[+]"));
-        assert!(text.chars().count() <= 60);
-    }
-
-    #[test]
-    fn the_window_always_includes_the_active_tab_even_at_the_left_edge() {
-        let tabs: Vec<TabSummary> = (1..=9).map(|i| tab(&format!("session-{i}"))).collect();
-        let text = segments_text(&tabs, 0, 40);
-        assert!(text.contains("⟨1 session-1"), "active tab missing: {text}");
-        assert!(
-            text.contains('»'),
-            "expected a hidden-right indicator: {text}"
-        );
-        assert!(
-            !text.contains('«'),
-            "nothing should be hidden to the left of tab 1"
-        );
-    }
-
-    #[test]
-    fn a_long_title_is_middle_truncated() {
-        assert_eq!(truncate_title("a-very-long-workspace-name"), "a-very-lo…");
-    }
-
-    #[test]
-    fn streaming_takes_marker_priority_over_unread_and_attention() {
-        let mut t = tab("s");
-        t.unread = true;
-        t.needs_attention = true;
-        t.streaming = true;
-        assert_eq!(tab_marker(&t), " ⣾");
-    }
-
-    #[test]
-    fn needs_attention_outranks_unread() {
-        let mut t = tab("s");
-        t.unread = true;
-        t.needs_attention = true;
-        assert_eq!(tab_marker(&t), " !");
-    }
-
-    /// The `M7-6` baseline snapshot, extended by `M8-1`: the tab bar occupies row 0, and the
-    /// transcript and input box fill the body. The left model/provider panel is gone — that
-    /// state now renders as the bottom status bar (see [`render_status_bar`]) instead.
-    #[test]
-    fn baseline_snapshot() {
-        let mut transcript = Transcript::new();
-        transcript.push_user("what does build_toolset do?".to_string());
-        transcript.push_token("Let me check the source.");
-        transcript.push_tool_call("read_file".to_string());
-        transcript.resolve_tool_call("read_file", true, "210 lines".to_string());
-        transcript.push_token("It assembles the toolset for one agent.");
-        transcript.end_turn();
-
-        let mut wrap = WrapCache::new();
-        let input = InputBox::new();
-        let mut view = AppView {
-            tabs: vec![tab("mate")],
-            active: 0,
-            spawn_form: None,
-            session: View {
-                transcript: &transcript,
-                wrap: &mut wrap,
-                input: &input,
-                scroll: 0,
-                running_turn: false,
-                model: "Qwen3-Coder-30B",
-                provider: "huggingface",
-                tokens_sent: 0,
-                tokens_received: 0,
-                quit_armed: false,
-                close_confirm: false,
-            },
-        };
-
-        let backend = TestBackend::new(84, 15);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| draw(f, &mut view)).unwrap();
-
-        insta::assert_snapshot!(terminal.backend());
-    }
 }

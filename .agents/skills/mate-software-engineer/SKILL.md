@@ -102,22 +102,16 @@ resolver `3`.
   `--message-format=json`, filter for `reason: "compiler-message"`) is real compiler ground
   truth and safe to *read*; it just isn't safe to *trigger*. Don't poll it in a sleep loop —
   check once, and treat a stale timestamp as "no new information," not as a compile failure.
-- Hand-writing an `insta` `.snap` file (since `cargo insta accept` also needs `cargo`): front
-  matter is `source: <path relative to the workspace root>` + `expression: <macro arg as
-  typed>`, `---`, then the raw `Display` output. `assertion_line` appears in a *pending*
-  snapshot's terminal summary but is stripped before persistence — don't include it.
-  `TestBackend`'s `Display` wraps every row in literal `"..."` and pads to the buffer width;
-  copy failing-test output verbatim rather than retyping it, and verify row length
-  programmatically (`len()` per row) since trailing spaces are significant and easy to drop by
-  hand.
+- `ui.rs` (rendering: layout, tab bar, status bar, transcript/input widgets) has no test
+  module — `TestBackend`/`insta` snapshot tests were removed as not worth their upkeep (hand-
+  verifying or hand-computing a character grid, including wide glyphs like emoji, is error-prone
+  and `cargo insta accept` needs `cargo`, which rule 1 blocks). Don't add a snapshot test back
+  here; verify rendering changes by reading the code and, if needed, asking the user to run the
+  TUI. `insta` is no longer a dependency of `mate-tui` or listed in the workspace
+  `Cargo.toml` — don't reintroduce it for this crate.
 - Adding a new side panel to `draw()`: wrap it in an outer `Layout::horizontal([Constraint::
   Length(N), Constraint::Min(0)])` and put the existing vertical split inside the `Min(0)` chunk
-  — don't touch the vertical split itself. If a snapshot test exists, widen `TestBackend` by
-  exactly `N` instead of resizing the whole thing: the pre-existing (right-hand) columns then
-  stay byte-for-byte identical to the old snapshot, and only the new `N`-wide left columns need
-  hand-computing per row (title/border math, then paste the untouched original row content after
-  it). Verify with a quick Python snippet (border length, row length == N) rather than
-  hand-counting dashes.
+  — don't touch the vertical split itself.
 - `SessionHandle`/`SessionManager::spawn` (`mate-core/src/session.rs`) drop the `SessionSpec`
   after building the `Agent` — nothing about model, sub_provider, or backend kind is retrievable
   from the handle afterward. Any UI that needs to display them must have the caller
