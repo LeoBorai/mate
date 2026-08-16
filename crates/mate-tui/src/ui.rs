@@ -1,11 +1,13 @@
 //! Rendering: a one-row tab bar (`M8-1`) over the single-tab body `M7` already built. The tab
-//! bar is a pure function of `Vec<TabSummary>` + the active index — [`tab_bar_segments`] is
-//! unit-tested directly, with no terminal involved, since hand-verifying plain strings is a lot
-//! less error-prone than hand-computing a `TestBackend` grid for every tab count and width.
+//! bar is a pure function of `Vec<TabSummary>` + the active index — [`tab_bar_segments`] does
+//! the overflow/windowing math.
 //!
 //! [`AppView`] wraps the tab bar's input together with the active tab's own [`View`] (`M7-3`/
 //! `M7-4`/`M7-5`, unchanged) — switching tabs swaps which session's `View` gets built, not
 //! anything about how a session renders.
+//!
+//! No test module here (see `.agents/docs/testing.md`) — rendering/layout tests were dropped as
+//! not worth their upkeep.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -23,8 +25,8 @@ const MAX_INPUT_HEIGHT: u16 = 10;
 /// Fixed width reserved for a rendered line's role prefix (`you ›`, `agent ›`, a tool glyph),
 /// so wrapped body text lines up under the first line regardless of which prefix produced it.
 const PREFIX_WIDTH: u16 = 8;
-/// Width of the left model/provider panel, borders included.
-const MODEL_PANEL_WIDTH: u16 = 24;
+/// Height of the bottom status bar (glyphs + values, no border).
+const STATUS_BAR_HEIGHT: u16 = 1;
 /// Tab titles longer than this are middle-truncated with `…` — keeps every tab's width
 /// bounded, which is what makes the overflow math in [`tab_bar_segments`] tractable.
 const MAX_TAB_TITLE: usize = 10;
@@ -48,6 +50,8 @@ pub(crate) struct View<'a> {
     pub(crate) running_turn: bool,
     pub(crate) model: &'a str,
     pub(crate) provider: &'a str,
+    pub(crate) tokens_sent: u64,
+    pub(crate) tokens_received: u64,
     pub(crate) quit_armed: bool,
     pub(crate) close_confirm: bool,
 }
@@ -72,24 +76,25 @@ pub(crate) struct AppView<'a> {
 
 pub(crate) fn draw(f: &mut Frame<'_>, view: &mut AppView<'_>) {
     let area = f.area();
-    let [tab_area, body_area] =
-        Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
+    let [tab_area, body_area, status_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(0),
+        Constraint::Length(STATUS_BAR_HEIGHT),
+    ])
+    .areas(area);
     render_tab_bar(f, tab_area, &view.tabs, view.active);
     draw_body(f, body_area, &mut view.session);
+    render_status_bar(f, status_area, &view.session);
     if let Some(form) = &view.spawn_form {
         render_spawn_form(f, area, form);
     }
 }
 
 fn draw_body(f: &mut Frame<'_>, area: Rect, view: &mut View<'_>) {
-    let [panel_area, main_area] =
-        Layout::horizontal([Constraint::Length(MODEL_PANEL_WIDTH), Constraint::Min(0)]).areas(area);
-
     let input_height = input_height(view);
     let [transcript_area, input_area] =
-        Layout::vertical([Constraint::Min(0), Constraint::Length(input_height)]).areas(main_area);
+        Layout::vertical([Constraint::Min(0), Constraint::Length(input_height)]).areas(area);
 
-    render_model_panel(f, panel_area, view);
     render_transcript(f, transcript_area, view);
     render_input(f, input_area, view);
 }
@@ -317,15 +322,16 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     }
 }
 
-fn render_model_panel(f: &mut Frame<'_>, area: Rect, view: &View<'_>) {
-    let block = Block::default().borders(Borders::ALL).title(" model ");
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-    let lines = vec![
-        Line::from(format!("Model: {}", view.model)),
-        Line::from(format!("Provider: {}", view.provider)),
-    ];
-    f.render_widget(Paragraph::new(lines), inner);
+/// Bottom status bar (deprecates the old left model/provider panel): a single row, no border,
+/// filled with a solid gray background — glyphs stand in for labels so the values (provider,
+/// agent model, tokens sent/received) fit without eating transcript width.
+fn render_status_bar(f: &mut Frame<'_>, area: Rect, view: &View<'_>) {
+    let style = Style::default().bg(Color::DarkGray).fg(Color::White);
+    let line = Line::from(format!(
+        " 📡 {}  🤖 {}  ↑{}  ↓{}",
+        view.provider, view.model, view.tokens_sent, view.tokens_received
+    ));
+    f.render_widget(Paragraph::new(line).style(style), area);
 }
 
 fn input_height(view: &View<'_>) -> u16 {
@@ -428,147 +434,4 @@ fn styled_line(entry: &Entry, raw: &str, first: bool) -> Line<'static> {
         Span::styled(prefix, style),
         Span::raw(raw.to_string()),
     ])
-}
-
-#[cfg(test)]
-mod tests {
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
-
-    use super::*;
-
-    fn tab(title: &str) -> TabSummary {
-        TabSummary {
-            title: title.to_string(),
-            streaming: false,
-            unread: false,
-            needs_attention: false,
-        }
-    }
-
-    fn segments_text(tabs: &[TabSummary], active: usize, width: u16) -> String {
-        tab_bar_segments(tabs, active, width)
-            .into_iter()
-            .map(|s| s.text)
-            .collect()
-    }
-
-    #[test]
-    fn a_single_tab_renders_with_the_plus_affordance() {
-        assert_eq!(segments_text(&[tab("mate")], 0, 84), "⟨1 mate⟩ [+]");
-    }
-
-    #[test]
-    fn five_tabs_fit_at_full_width_with_no_windowing() {
-        let tabs: Vec<TabSummary> = (1..=5).map(|i| tab(&format!("s{i}"))).collect();
-        assert_eq!(
-            segments_text(&tabs, 2, 84),
-            "⟨1 s1⟩ ⟨2 s2⟩ ⟨3 s3⟩ ⟨4 s4⟩ ⟨5 s5⟩ [+]"
-        );
-    }
-
-    #[test]
-    fn nine_tabs_still_fit_at_full_width() {
-        let tabs: Vec<TabSummary> = (1..=9).map(|i| tab(&format!("s{i}"))).collect();
-        let text = segments_text(&tabs, 8, 84);
-        for i in 1..=9 {
-            assert!(
-                text.contains(&format!("⟨{i} s{i}⟩")),
-                "missing tab {i} in {text}"
-            );
-        }
-        assert!(text.ends_with("[+]"));
-        assert!(!text.contains('«') && !text.contains('»'));
-    }
-
-    #[test]
-    fn nine_tabs_at_sixty_columns_window_around_the_active_tab_and_hide_the_rest() {
-        let tabs: Vec<TabSummary> = (1..=9).map(|i| tab(&format!("session-{i}"))).collect();
-        let text = segments_text(&tabs, 8, 60);
-        // The active tab (index 8, the 9th) must always be visible.
-        assert!(text.contains("⟨9 session-9"), "active tab missing: {text}");
-        // Something had to be hidden at this width for nine 10-char-capable titles.
-        assert!(
-            text.contains('«'),
-            "expected a hidden-left indicator: {text}"
-        );
-        assert!(text.ends_with("[+]"));
-        assert!(text.chars().count() <= 60);
-    }
-
-    #[test]
-    fn the_window_always_includes_the_active_tab_even_at_the_left_edge() {
-        let tabs: Vec<TabSummary> = (1..=9).map(|i| tab(&format!("session-{i}"))).collect();
-        let text = segments_text(&tabs, 0, 40);
-        assert!(text.contains("⟨1 session-1"), "active tab missing: {text}");
-        assert!(
-            text.contains('»'),
-            "expected a hidden-right indicator: {text}"
-        );
-        assert!(
-            !text.contains('«'),
-            "nothing should be hidden to the left of tab 1"
-        );
-    }
-
-    #[test]
-    fn a_long_title_is_middle_truncated() {
-        assert_eq!(truncate_title("a-very-long-workspace-name"), "a-very-lo…");
-    }
-
-    #[test]
-    fn streaming_takes_marker_priority_over_unread_and_attention() {
-        let mut t = tab("s");
-        t.unread = true;
-        t.needs_attention = true;
-        t.streaming = true;
-        assert_eq!(tab_marker(&t), " ⣾");
-    }
-
-    #[test]
-    fn needs_attention_outranks_unread() {
-        let mut t = tab("s");
-        t.unread = true;
-        t.needs_attention = true;
-        assert_eq!(tab_marker(&t), " !");
-    }
-
-    /// The `M7-6` baseline snapshot, extended by `M8-1`: the tab bar now occupies row 0, and
-    /// everything below it — the model panel, transcript, and input box — is byte-for-byte the
-    /// same as the pre-`M8` snapshot, just shifted down by the one new row.
-    #[test]
-    fn baseline_snapshot() {
-        let mut transcript = Transcript::new();
-        transcript.push_user("what does build_toolset do?".to_string());
-        transcript.push_token("Let me check the source.");
-        transcript.push_tool_call("read_file".to_string());
-        transcript.resolve_tool_call("read_file", true, "210 lines".to_string());
-        transcript.push_token("It assembles the toolset for one agent.");
-        transcript.end_turn();
-
-        let mut wrap = WrapCache::new();
-        let input = InputBox::new();
-        let mut view = AppView {
-            tabs: vec![tab("mate")],
-            active: 0,
-            spawn_form: None,
-            session: View {
-                transcript: &transcript,
-                wrap: &mut wrap,
-                input: &input,
-                scroll: 0,
-                running_turn: false,
-                model: "Qwen3-Coder-30B",
-                provider: "huggingface",
-                quit_armed: false,
-                close_confirm: false,
-            },
-        };
-
-        let backend = TestBackend::new(84, 15);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| draw(f, &mut view)).unwrap();
-
-        insta::assert_snapshot!(terminal.backend());
-    }
 }

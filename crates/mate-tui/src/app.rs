@@ -63,6 +63,10 @@ struct SessionTab {
     input: InputBox,
     scroll: usize,
     running_turn: bool,
+    /// Cumulative prompt/completion tokens for the session, folded in off each
+    /// `AgentEvent::Usage` (one per completion call) — the bottom status bar's `↑`/`↓` values.
+    tokens_sent: u64,
+    tokens_received: u64,
     /// Set when a background tab produces visible activity (`M8-4`); cleared on switching to it.
     unread: bool,
     /// Set when a background tab errors (`M8-4`); cleared on switching to it. Takes marker
@@ -89,6 +93,8 @@ impl SessionTab {
             input: InputBox::new(),
             scroll: 0,
             running_turn: false,
+            tokens_sent: 0,
+            tokens_received: 0,
             unread: false,
             needs_attention: false,
         }
@@ -235,6 +241,8 @@ impl App {
                 running_turn: tab.running_turn,
                 model: &tab.model,
                 provider: &tab.provider,
+                tokens_sent: tab.tokens_sent,
+                tokens_received: tab.tokens_received,
                 quit_armed,
                 close_confirm,
             },
@@ -286,12 +294,15 @@ impl App {
                 }
                 None
             }
-            // No producer yet: approvals land at `M13`, subagent lifecycle at `M9`, and
-            // `Usage` only matters once the context widget exists (`M12`).
+            AgentEvent::Usage(usage) => {
+                tab.tokens_sent += usage.input_tokens;
+                tab.tokens_received += usage.output_tokens;
+                None
+            }
+            // No producer yet: approvals land at `M13`, subagent lifecycle at `M9`.
             AgentEvent::ApprovalRequired { .. }
             | AgentEvent::SubagentSpawned { .. }
-            | AgentEvent::SubagentFinished { .. }
-            | AgentEvent::Usage(_) => None,
+            | AgentEvent::SubagentFinished { .. } => None,
         };
         if activity && !is_active {
             tab.unread = true;

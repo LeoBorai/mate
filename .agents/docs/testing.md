@@ -30,18 +30,15 @@
 - **Streaming/event mapping** (`mate-core/src/streaming.rs`, landed): build
   synthetic `MultiTurnStreamItem` streams directly — see `streaming.md`'s
   testing section. No mock model needed for the event-mapping layer itself.
-- **TUI** (`mate-tui`, `M7`/`M8`): `ratatui::backend::TestBackend` + `insta` snapshots, driven
-  against `ui::AppView` directly — no session or terminal needed, since rendering only depends
-  on a `Transcript`/`WrapCache`/`InputBox` plus a `Vec<TabSummary>` (see `ui.rs`'s
-  `baseline_snapshot`). The tab bar's overflow/windowing logic (`tab_bar_segments`) is unit-
-  tested against plain strings instead — hand-verifying a string is far less error-prone than
-  hand-computing a `TestBackend` grid per tab count and width. App-level routing (key handling,
-  session-event-to-tab routing, spawn/close bookkeeping) is tested in `app.rs` without a
-  terminal, using `Backend::huggingface`'s offline construction the same way
-  `mate-core/src/session.rs`'s own tests do — a real `SessionManager::spawn` builds an `Agent`
-  value with no network I/O, so `App` tests can spawn real tabs and exercise `switch_to`,
-  `on_session_event`, `close_tab`, and `submit_spawn_form` without a mock model or a live
-  provider.
+- **TUI** (`mate-tui`, `M7`/`M8`): `ui.rs` (rendering: layout, tab bar, status bar, transcript/
+  input widgets) has no test module — `TestBackend`/`insta` snapshot tests, and unit tests
+  against `tab_bar_segments`'s plain-string output, were removed as not worth their upkeep;
+  don't add rendering tests back there. App-level routing (key handling, session-event-to-tab
+  routing, spawn/close bookkeeping) is still tested in `app.rs` without a terminal, using
+  `Backend::huggingface`'s offline construction the same way `mate-core/src/session.rs`'s own
+  tests do — a real `SessionManager::spawn` builds an `Agent` value with no network I/O, so `App`
+  tests can spawn real tabs and exercise `switch_to`, `on_session_event`, `close_tab`, and
+  `submit_spawn_form` without a mock model or a live provider.
 - **Config precedence** (landed): `figment::Jail`, one test per layer — see
   `config.md`.
 

@@ -31,7 +31,7 @@ pub struct SessionDefaults {
 }
 
 impl SessionDefaults {
-    /// The provider label shown in a tab's model panel — `Backend` never stores this as a
+    /// The provider label shown in a tab's status bar — `Backend` never stores this as a
     /// string (§ providers.md), so it's derived here from config the same way `mate-cli`
     /// already did for the single-tab `M7` wiring.
     pub fn provider_label(&self) -> String {
