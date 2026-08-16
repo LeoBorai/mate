@@ -4719,6 +4719,7 @@ dependencies = [
  "mate-tool-api",
  "mate-tool-fs",
  "mate-tool-http",
+ "reqwest 0.13.4",
  "rig",
  "serde",
  "serde_json",

@@ -55,7 +55,7 @@ impl Default for DelegationPolicy {
     fn default() -> Self {
         Self {
             enabled: true,
-            subagent_model: Some("Qwen/Qwen3-32B".to_string()),
+            subagent_model: Some("Qwen/Qwen3-Coder-30B-A3B-Instruct".to_string()),
             max_depth: 1,
             max_concurrent: 4,
             max_total_per_turn: 8,

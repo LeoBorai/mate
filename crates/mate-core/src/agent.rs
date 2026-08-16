@@ -54,12 +54,44 @@ impl BuiltAgent {
 
 /// Builds a Rig agent against `backend`'s client, configured per `spec`, with `ctx`'s toolset
 /// attached (`M4-1`, `M4-2`) and `spec.max_turns` as the multi-turn budget, backed by
-/// [`TurnCapHook`] (`M4-4`).
+/// [`TurnCapHook`] (`M4-4`). Logs an `info` line before and after each branch — the resolved
+/// model (post [`Backend::qualify_model`] on the HuggingFace path) is the detail most worth
+/// having in the log file when a build fails or routes somewhere unexpected.
 pub fn build_agent(backend: &Backend, spec: &AgentSpec, ctx: ToolCtx) -> BuiltAgent {
     let tools = build_toolset(ctx);
     match backend {
-        Backend::HuggingFace(client) => BuiltAgent::HuggingFace(
-            client
+        Backend::HuggingFace { client, .. } => {
+            let model = backend.qualify_model(&spec.model);
+            tracing::info!(
+                provider = "huggingface",
+                model = %model,
+                max_turns = spec.max_turns,
+                may_delegate = spec.may_delegate,
+                "building agent"
+            );
+            let agent = client
+                .agent(&model)
+                .preamble(&spec.preamble)
+                .temperature(spec.temperature)
+                .max_tokens(spec.max_tokens)
+                .tool_server_handle(tools)
+                .default_max_turns(spec.max_turns)
+                .add_hook(TurnCapHook {
+                    max_turns: spec.max_turns,
+                })
+                .build();
+            tracing::info!(provider = "huggingface", model = %model, "agent built");
+            BuiltAgent::HuggingFace(agent)
+        }
+        Backend::OpenAiCompatible(client) => {
+            tracing::info!(
+                provider = "openai_compatible",
+                model = %spec.model,
+                max_turns = spec.max_turns,
+                may_delegate = spec.may_delegate,
+                "building agent"
+            );
+            let agent = client
                 .agent(&spec.model)
                 .preamble(&spec.preamble)
                 .temperature(spec.temperature)
@@ -69,20 +101,9 @@ pub fn build_agent(backend: &Backend, spec: &AgentSpec, ctx: ToolCtx) -> BuiltAg
                 .add_hook(TurnCapHook {
                     max_turns: spec.max_turns,
                 })
-                .build(),
-        ),
-        Backend::OpenAiCompatible(client) => BuiltAgent::OpenAiCompatible(
-            client
-                .agent(&spec.model)
-                .preamble(&spec.preamble)
-                .temperature(spec.temperature)
-                .max_tokens(spec.max_tokens)
-                .tool_server_handle(tools)
-                .default_max_turns(spec.max_turns)
-                .add_hook(TurnCapHook {
-                    max_turns: spec.max_turns,
-                })
-                .build(),
-        ),
+                .build();
+            tracing::info!(provider = "openai_compatible", model = %spec.model, "agent built");
+            BuiltAgent::OpenAiCompatible(agent)
+        }
     }
 }

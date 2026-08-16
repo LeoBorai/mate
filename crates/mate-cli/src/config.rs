@@ -33,8 +33,8 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            model: "Qwen/Qwen3-Coder-480B-A35B-Instruct".to_string(),
-            sub_provider: Some("together".to_string()),
+            model: "Qwen/Qwen3-Coder-30B-A3B-Instruct".to_string(),
+            sub_provider: None,
             max_sessions: 8,
             max_turns: 12,
             delegation: DelegationPolicy::default(),
@@ -42,7 +42,7 @@ impl Default for Config {
             panel: PanelConfig::default(),
             pricing: HashMap::from([
                 (
-                    "Qwen/Qwen3-Coder-480B-A35B-Instruct".to_string(),
+                    "Qwen/Qwen3-Coder-30B-A3B-Instruct".to_string(),
                     PricingEntry {
                         input: 0.40,
                         output: 1.60,
