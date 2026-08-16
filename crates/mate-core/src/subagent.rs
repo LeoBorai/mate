@@ -28,6 +28,14 @@
 //! narrowing cancellation to a single turn's tool calls needs `ToolCtx` to carry a
 //! turn-swappable token, which nothing in `M9` produces. Noted here so it isn't mistaken for an
 //! oversight if it's the first thing a future milestone needs to fix.
+//!
+//! **Activity (`M11-4`).** `self.activity` is a clone of the session's one shared
+//! `ActivitySink`, handed down from [`crate::session::SessionManager::spawn`] the same way
+//! `events_tx` already is. Every subagent's `ToolCtx` gets a clone of *that* sink — not a fresh
+//! per-subagent channel — so a subagent's `ToolActivity` records reach the same forwarding task
+//! the root agent's do, tagged with the subagent's own `AgentId` (already part of the sink's
+//! `(AgentId, ToolActivity)` item type, so no extra wiring is needed here to keep that
+//! attribution straight).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -36,8 +44,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use mate_tool_api::{
-    AgentId, SubagentOutcome, SubagentReport, SubagentRequest, SubagentSpawner, ToolCtx,
-    ToolFailure, ToolProfile, truncate_with_notice,
+    ActivitySink, AgentId, SubagentOutcome, SubagentReport, SubagentRequest, SubagentSpawner,
+    ToolCtx, ToolFailure, ToolProfile, truncate_with_notice,
 };
 use mate_tool_http::HttpShared;
 use rig::agent::Agent;
@@ -61,6 +69,10 @@ pub struct SubagentRunner {
     http_shared: Arc<HttpShared>,
     session: SessionId,
     events_tx: mpsc::Sender<SessionEvent>,
+    /// The session's one shared activity sink (`M11-4`): every subagent's `ToolCtx` gets a
+    /// clone of this, rather than each building its own throwaway channel, so a subagent's
+    /// `ToolActivity` records reach the same forwarding task the root agent's do.
+    activity: ActivitySink,
     root: PathBuf,
     max_output_bytes: usize,
     model: String,
@@ -88,11 +100,13 @@ impl SubagentRunner {
     /// and id allocator. `root_agent` is the session's own (already-built) `AgentSpec`: model,
     /// provider routing, temperature, and http policy all carry forward into a subagent's spec
     /// as sensible defaults, narrowed per §7.4 rather than reopened.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         backend: Arc<Backend>,
         http_shared: Arc<HttpShared>,
         session: SessionId,
         events_tx: mpsc::Sender<SessionEvent>,
+        activity: ActivitySink,
         root: PathBuf,
         max_output_bytes: usize,
         root_agent: &AgentSpec,
@@ -103,6 +117,7 @@ impl SubagentRunner {
             http_shared,
             session,
             events_tx,
+            activity,
             root,
             max_output_bytes,
             model: root_agent.model.clone(),
@@ -135,6 +150,7 @@ impl SubagentRunner {
             http_shared: self.http_shared.clone(),
             session: self.session,
             events_tx: self.events_tx.clone(),
+            activity: self.activity.clone(),
             root: self.root.clone(),
             max_output_bytes: self.max_output_bytes,
             model: self.model.clone(),
@@ -194,14 +210,13 @@ impl SubagentSpawner for SubagentRunner {
     async fn run(&self, request: SubagentRequest) -> Result<SubagentReport, ToolFailure> {
         let (agent_id, _permit, may_delegate) = self.acquire().await?;
 
-        let (activity, _activity_rx) = mpsc::channel(64);
         let cancel = request.cancel.child_token();
         let ctx = ToolCtx {
             agent: agent_id,
             root: self.root.clone(),
             max_output_bytes: self.max_output_bytes,
             spawner: may_delegate.then(|| self.nested() as Arc<dyn SubagentSpawner>),
-            activity,
+            activity: self.activity.clone(),
             cancel: cancel.clone(),
         };
 
@@ -430,12 +445,14 @@ mod tests {
             may_delegate: true,
             delegation: policy,
         };
+        let (activity, _activity_rx) = mpsc::channel(64);
         (
             SubagentRunner::new(
                 backend,
                 http_shared,
                 session_id(),
                 events_tx,
+                activity,
                 PathBuf::from("."),
                 1_000_000,
                 &spec,

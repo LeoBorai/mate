@@ -26,6 +26,9 @@ pub enum ToolActivity {
         ms: u64,
         bytes: usize,
         redirects: u8,
+        /// Why the request never went out — an SSRF guard tripping (§8.2), for instance.
+        /// `None` on a request that actually reached a server, `status` included.
+        reason: Option<String>,
     },
     /// Free-form note, kept to ~60 chars for the subagent activity line.
     Note { text: String },

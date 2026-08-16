@@ -1,6 +1,8 @@
 //! `read_file` (`M3-3`): line-numbered file contents, optionally sliced to a line range.
 
-use mate_tool_api::{ToolCtx, ToolFailure, enforce_max_size, number_lines, refuse_binary};
+use mate_tool_api::{
+    FileOp, ToolActivity, ToolCtx, ToolFailure, enforce_max_size, number_lines, refuse_binary,
+};
 use rig::tool::{PortableTool, ToolExecutionError};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -76,6 +78,20 @@ impl PortableTool for ReadFile {
         let start = args.start_line.unwrap_or(1).clamp(1, total);
         let end = args.end_line.unwrap_or(total).clamp(start, total);
 
+        // Whole-file line/byte counts, not the (possibly sliced) range actually returned —
+        // the documents log (§9.8) shows what the file *is*, so repeat reads of different
+        // slices still coalesce into one row instead of each slice looking like a different
+        // file size.
+        let _ = self.ctx.activity.try_send((
+            self.ctx.agent,
+            ToolActivity::FileTouched {
+                path: path.clone(),
+                op: FileOp::Read,
+                lines: total,
+                bytes: metadata.len() as usize,
+            },
+        ));
+
         Ok(number_lines(&lines[(start - 1)..end].join("\n"), start))
     }
 }
@@ -97,6 +113,26 @@ mod tests {
         }
     }
 
+    fn ctx_with_activity(
+        root: std::path::PathBuf,
+    ) -> (
+        ToolCtx,
+        tokio::sync::mpsc::Receiver<(mate_tool_api::AgentId, ToolActivity)>,
+    ) {
+        let (activity, rx) = tokio::sync::mpsc::channel(8);
+        (
+            ToolCtx {
+                agent: mate_tool_api::AgentId::ROOT,
+                root,
+                max_output_bytes: 1_000_000,
+                spawner: None,
+                activity,
+                cancel: CancellationToken::new(),
+            },
+            rx,
+        )
+    }
+
     fn args(path: &str, start_line: Option<usize>, end_line: Option<usize>) -> ReadFileArgs {
         ReadFileArgs {
             path: path.to_string(),
@@ -114,6 +150,32 @@ mod tests {
         let tool = ReadFile::new(ctx(root));
         let out = tool.call(args("a.txt", None, None)).await.unwrap();
         assert_eq!(out, "     1\tone\n     2\ttwo\n     3\tthree");
+    }
+
+    #[tokio::test]
+    async fn emits_a_file_touched_record_with_the_whole_files_lines_and_bytes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        std::fs::write(root.join("a.txt"), "one\ntwo\nthree").unwrap();
+        let (ctx, mut rx) = ctx_with_activity(root.clone());
+
+        let tool = ReadFile::new(ctx);
+        // Slicing to one line must not shrink the reported lines/bytes — they describe the
+        // whole file, not the slice actually returned (see the emission site's comment).
+        tool.call(args("a.txt", Some(1), Some(1))).await.unwrap();
+
+        let (agent, activity) = rx.try_recv().expect("a FileTouched record must be emitted");
+        assert_eq!(agent, mate_tool_api::AgentId::ROOT);
+        assert_eq!(
+            activity,
+            ToolActivity::FileTouched {
+                path: root.join("a.txt"),
+                op: FileOp::Read,
+                lines: 3,
+                bytes: 13,
+            },
+            "lines/bytes must reflect the whole file, not the requested slice"
+        );
     }
 
     #[tokio::test]

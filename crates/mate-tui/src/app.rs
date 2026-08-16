@@ -308,10 +308,12 @@ impl App {
                 tab.tokens_received += usage.output_tokens;
                 None
             }
-            // No producer yet: approvals land at `M13`, subagent lifecycle at `M9`.
+            // No consumer yet in this transcript-only view: approvals land at `M13`, the
+            // subagent roster and activity/documents/network widgets at `M12`.
             AgentEvent::ApprovalRequired { .. }
             | AgentEvent::SubagentSpawned { .. }
-            | AgentEvent::SubagentFinished { .. } => None,
+            | AgentEvent::SubagentFinished { .. }
+            | AgentEvent::Activity(_) => None,
         };
         if activity && !is_active {
             tab.unread = true;

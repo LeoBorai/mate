@@ -15,12 +15,19 @@
 //! any connection to it is attempted. Hitting `max_redirects` stops following further hops;
 //! the loop returns whatever response it has (typically still a redirect) rather than erroring,
 //! with the hop count reported in the output so the model can see it didn't reach a final page.
+//!
+//! **Activity telemetry (§9.3, `M11-3`).** Exactly one [`mate_tool_api::ToolActivity::NetRequest`]
+//! reaches `ctx.activity` per call: either the hop that finally blocks (`status: None`, `reason`
+//! set to why) or, if every hop clears the guard, the final response (`status` set, `reason:
+//! None`). Intermediate *followed* redirect hops don't get their own record — the network log
+//! (§9.7) shows one row per `http_request` call, with `redirects` naming how many hops it took.
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Instant;
 
-use mate_tool_api::{ToolCtx, ToolFailure, truncate_with_notice};
+use mate_tool_api::{ToolActivity, ToolCtx, ToolFailure, truncate_with_notice};
 use rig::tool::{PortableTool, ToolExecutionError};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -103,6 +110,7 @@ impl PortableTool for HttpRequest {
         let limits = self.shared.limits();
         let mut current_url = start_url;
         let mut hops: u8 = 0;
+        let started = Instant::now();
 
         let (mut response, hops) = loop {
             validate_scheme(&current_url)?;
@@ -114,10 +122,33 @@ impl PortableTool for HttpRequest {
                 ToolFailure::InvalidArgs("url has no resolvable port".to_string())
             })?;
 
-            let ip = self
+            let ip = match self
                 .shared
                 .resolve_validated(&host, self.allow_localhost)
-                .await?;
+                .await
+            {
+                Ok(ip) => ip,
+                Err(failure) => {
+                    // No connection was ever attempted (§8.2's SSRF guard tripped before
+                    // any socket opened) — `status: None` marks it blocked, and the
+                    // failure's own message carries the reason (`resolve_validated`
+                    // formats it as "blocked address {ip} (<reason>)").
+                    let _ = self.ctx.activity.try_send((
+                        self.ctx.agent,
+                        ToolActivity::NetRequest {
+                            method: method.clone(),
+                            host,
+                            path: current_url.path().to_string(),
+                            status: None,
+                            ms: started.elapsed().as_millis() as u64,
+                            bytes: 0,
+                            redirects: hops,
+                            reason: Some(failure.to_string()),
+                        },
+                    ));
+                    return Err(failure);
+                }
+            };
             self.shared.throttle(&host).await;
             let client = self
                 .shared
@@ -185,6 +216,20 @@ impl PortableTool for HttpRequest {
 
         let rendered = render::render_body(&content_type, &body, &final_url, render_text)?;
         let truncated = truncate_with_notice(&rendered, self.ctx.max_output_bytes);
+
+        let _ = self.ctx.activity.try_send((
+            self.ctx.agent,
+            ToolActivity::NetRequest {
+                method,
+                host: final_url.host_str().unwrap_or_default().to_string(),
+                path: final_url.path().to_string(),
+                status: Some(status.as_u16()),
+                ms: started.elapsed().as_millis() as u64,
+                bytes: body.len(),
+                redirects: hops,
+                reason: None,
+            },
+        ));
 
         Ok(format!(
             "{} {}\ncontent-type: {content_type}\nredirects: {hops}\n\n{truncated}",
