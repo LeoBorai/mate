@@ -74,6 +74,10 @@ impl Transcript {
         self.entries.iter()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
     fn push(&mut self, build: impl FnOnce(EntryId) -> Entry) -> Option<EntryId> {
         let id = self.next_id;
         self.next_id += 1;
