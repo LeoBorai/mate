@@ -14,8 +14,16 @@
   `Tool` for crash isolation) — no `Backend`/network needed except the one
   offline-construction test that exercises `SessionManager::spawn`'s
   `max_sessions` cap.
-- **Subagent runtime** (not yet landed): test headless, against Rig's mock
-  models — no TUI needed to exercise concurrency/cancellation bugs.
+- **Subagent runtime** (`mate-core/src/subagent.rs`, landed): the guardrail gate
+  (depth, per-turn cap, concurrency-queues-not-rejects) is split into
+  `SubagentRunner::acquire` and tested directly — concurrent `tokio::spawn`
+  tasks racing on a real `Semaphore`, no agent ever built. The turn-driving
+  half (`drive_subagent`) is split out generic over the completion model and
+  tested against Rig's mock models — report rendering/truncation, wall-clock
+  timeout, and cancellation propagation all drive real (mock) turns with no
+  `Backend`/network involved. `SubagentSpawner::run` itself (the guardrails +
+  real `Backend`/`build_agent` glue) only gets offline-constructible-`Backend`
+  coverage for the same reason `SessionManager::spawn`'s does.
 - **Agent/provider behavior**: Rig ships mock models and VCR-style cassette
   tests; record a scenario per case (tool call, error recovery, multi-turn)
   and replay in CI rather than hitting a live provider.

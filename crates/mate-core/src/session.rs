@@ -27,6 +27,15 @@
 //! awaits, rather than unwinding into whatever called `spawn`. The supervisor turns that into
 //! `SessionStatus::Errored` on the same watch channel the task itself uses for every other
 //! transition — the rest of the process never sees a panic, only a status change.
+//!
+//! `M9-2`'s delegation wiring lives in [`SessionManager::spawn`]: `session_cancel` is built
+//! *there* now (not inside [`session_task`], as it was through `M8`) so it can be handed to the
+//! [`ToolCtx`] every tool — including `mate-tool-agent`'s `spawn_agent` — was built against, as
+//! `ctx.cancel`, a genuine child of the session's own token (`mate_tool_api::ToolCtx`'s doc
+//! comment already promised this; nothing wired it until now). `Shutdown` cancelling
+//! `session_cancel` therefore cancels every subagent's token too, one hop down the same tree
+//! §5.4 describes — matching [`crate::subagent`]'s module doc for exactly which cancel paths
+//! this covers and which (`Cancel`, a single turn) it doesn't yet.
 
 use std::sync::Arc;
 
@@ -43,6 +52,7 @@ use crate::agent::{BuiltAgent, build_agent};
 use crate::backend::Backend;
 use crate::config::SessionSpec;
 use crate::streaming::{self, AgentEvent, AgentEventEnvelope};
+use crate::subagent::SubagentRunner;
 
 slotmap::new_key_type! {
     /// One tab's worth of state (§5.1): a root agent, its history, and (from `M9` on) every
@@ -155,16 +165,25 @@ impl SessionManager {
     /// Builds `spec`'s root agent against the shared backend, spawns its task under crash
     /// isolation, and returns a handle to it. Errs without spawning anything once
     /// `max_sessions` live sessions already exist (`M6-4`'s cap).
+    ///
+    /// `M9-2`: when `spec.agent.may_delegate`, builds this session's [`SubagentRunner`] before
+    /// the agent itself, overwrites `ctx.spawner` with it (whatever the caller passed —
+    /// `mate-tui`/`mate-cli`'s builders always pass `None`, since neither knows the session id
+    /// or event channel this needs), and overwrites `ctx.cancel` with a child of this session's
+    /// own cancellation token so `Shutdown` reaches every tool call, subagents included (see
+    /// this module's doc comment). A root agent with `may_delegate: false` gets neither — its
+    /// `spawn_agent` tool is never attached (`toolset::build_toolset` gates on
+    /// `ctx.spawner.is_some()`), which is also how a subagent (always `may_delegate: false`
+    /// past the configured delegation depth) ends up with no spawn tool at all.
     pub fn spawn(
         &mut self,
         spec: &SessionSpec,
-        ctx: ToolCtx,
+        mut ctx: ToolCtx,
     ) -> Result<SessionHandle, SessionError> {
         if self.sessions.len() >= self.max_sessions {
             return Err(SessionError::TooManySessions(self.max_sessions));
         }
 
-        let built = build_agent(&self.backend, &spec.agent, ctx);
         let (cmds_tx, cmds_rx) = mpsc::channel(CMD_CHANNEL_CAPACITY);
         let (status_tx, status_rx) = watch::channel(SessionStatus::Idle);
         let events_tx = self.events_tx.clone();
@@ -175,13 +194,45 @@ impl SessionManager {
             status: status_rx,
         });
 
+        let session_cancel = CancellationToken::new();
+        ctx.cancel = session_cancel.child_token();
+
+        let subagents = if spec.agent.may_delegate {
+            let runner = Arc::new(SubagentRunner::new(
+                self.backend.clone(),
+                id,
+                events_tx.clone(),
+                ctx.root.clone(),
+                ctx.max_output_bytes,
+                &spec.agent,
+            ));
+            ctx.spawner = Some(runner.clone() as Arc<dyn mate_tool_api::SubagentSpawner>);
+            Some(runner)
+        } else {
+            None
+        };
+
+        let built = build_agent(&self.backend, &spec.agent, ctx);
+
         match built {
-            BuiltAgent::HuggingFace(agent) => {
-                spawn_supervised(id, agent, cmds_rx, events_tx, status_tx)
-            }
-            BuiltAgent::OpenAiCompatible(agent) => {
-                spawn_supervised(id, agent, cmds_rx, events_tx, status_tx)
-            }
+            BuiltAgent::HuggingFace(agent) => spawn_supervised(
+                id,
+                agent,
+                cmds_rx,
+                events_tx,
+                status_tx,
+                session_cancel,
+                subagents,
+            ),
+            BuiltAgent::OpenAiCompatible(agent) => spawn_supervised(
+                id,
+                agent,
+                cmds_rx,
+                events_tx,
+                status_tx,
+                session_cancel,
+                subagents,
+            ),
         }
 
         Ok(self.sessions[id].clone())
@@ -204,19 +255,31 @@ impl SessionManager {
 /// `SessionStatus::Errored` on the same channel the task uses for every other transition.
 /// Every other live session's task is entirely unaffected — it isn't even aware this one
 /// exists.
+#[allow(clippy::too_many_arguments)]
 fn spawn_supervised<M>(
     id: SessionId,
     agent: Agent<M>,
     cmds_rx: mpsc::Receiver<SessionCmd>,
     events_tx: mpsc::Sender<SessionEvent>,
     status_tx: watch::Sender<SessionStatus>,
+    session_cancel: CancellationToken,
+    subagents: Option<Arc<SubagentRunner>>,
 ) where
     M: CompletionModel + 'static,
     M::StreamingResponse: GetTokenUsage,
 {
     let supervisor_status = status_tx.clone();
     tokio::spawn(async move {
-        let result = tokio::spawn(session_task(id, agent, cmds_rx, events_tx, status_tx)).await;
+        let result = tokio::spawn(session_task(
+            id,
+            agent,
+            cmds_rx,
+            events_tx,
+            status_tx,
+            session_cancel,
+            subagents,
+        ))
+        .await;
         if result.is_err() {
             let _ = supervisor_status.send(SessionStatus::Errored);
         }
@@ -225,22 +288,33 @@ fn spawn_supervised<M>(
 
 /// The session task itself (`M6-2`): one per session, owning `agent`'s conversation history
 /// across turns and consuming `cmds` until `Shutdown` (or every [`SessionHandle`] is dropped).
+///
+/// `session_cancel` is built by [`SessionManager::spawn`] now, not here (`M9-2`) — it's the
+/// same token already baked into this session's `ToolCtx` as `ctx.cancel`, so `Shutdown`
+/// cancelling it reaches tool calls (subagent spawns included) as well as the turn stream.
+/// `subagents` resets its per-turn spawn counter (`M9-4`'s `max_total_per_turn`) once per
+/// prompt — a fan-out cap that bounds one turn's sequential tool rounds, not the session.
+#[allow(clippy::too_many_arguments)]
 async fn session_task<M>(
     id: SessionId,
     agent: Agent<M>,
     mut cmds: mpsc::Receiver<SessionCmd>,
     events_tx: mpsc::Sender<SessionEvent>,
     status_tx: watch::Sender<SessionStatus>,
+    session_cancel: CancellationToken,
+    subagents: Option<Arc<SubagentRunner>>,
 ) where
     M: CompletionModel + 'static,
     M::StreamingResponse: GetTokenUsage,
 {
-    let session_cancel = CancellationToken::new();
     let mut history: Vec<Message> = Vec::new();
 
     while let Some(cmd) = cmds.recv().await {
         match cmd {
             SessionCmd::Prompt(prompt) => {
+                if let Some(runner) = &subagents {
+                    runner.reset_turn();
+                }
                 let shutdown = run_prompt(
                     id,
                     &agent,
@@ -339,7 +413,11 @@ where
 /// every session task runs under the process's multi-thread runtime) — the mechanism that
 /// makes a full channel throttle the producing agent's turn instead of dropping the event or
 /// panicking (§5.2).
-fn forward(
+///
+/// `pub(crate)` since `M9-2`: [`crate::subagent`] forwards `SubagentSpawned`/`Finished` and
+/// every event a subagent's own turn produces through this exact function, so the shared
+/// channel's backpressure behavior is identical for root and subagent events alike.
+pub(crate) fn forward(
     events_tx: &mpsc::Sender<SessionEvent>,
     session: SessionId,
     envelope: AgentEventEnvelope,
@@ -409,7 +487,15 @@ mod tests {
         let (events_tx, events_rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
         let mut sessions: SlotMap<SessionId, ()> = SlotMap::with_key();
         let id = sessions.insert(());
-        tokio::spawn(session_task(id, agent, cmds_rx, events_tx, status_tx));
+        tokio::spawn(session_task(
+            id,
+            agent,
+            cmds_rx,
+            events_tx,
+            status_tx,
+            CancellationToken::new(),
+            None,
+        ));
         (
             id,
             SessionHandle {
@@ -474,7 +560,15 @@ mod tests {
         let (events_tx, mut events_rx) = mpsc::channel::<SessionEvent>(2);
         let mut sessions: SlotMap<SessionId, ()> = SlotMap::with_key();
         let id = sessions.insert(());
-        let task = tokio::spawn(session_task(id, agent, cmds_rx, events_tx, status_tx));
+        let task = tokio::spawn(session_task(
+            id,
+            agent,
+            cmds_rx,
+            events_tx,
+            status_tx,
+            CancellationToken::new(),
+            None,
+        ));
 
         cmds_tx.send(SessionCmd::Prompt("go".into())).await.unwrap();
 
@@ -550,7 +644,15 @@ mod tests {
         let (events_tx_a, _events_rx_a) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
         let mut sessions: SlotMap<SessionId, ()> = SlotMap::with_key();
         let id_a = sessions.insert(());
-        spawn_supervised(id_a, panicking_agent, cmds_rx_a, events_tx_a, status_tx_a);
+        spawn_supervised(
+            id_a,
+            panicking_agent,
+            cmds_rx_a,
+            events_tx_a,
+            status_tx_a,
+            CancellationToken::new(),
+            None,
+        );
         cmds_tx_a
             .send(SessionCmd::Prompt("break".into()))
             .await
@@ -682,5 +784,48 @@ mod tests {
             .wait_for(|s| *s == SessionStatus::Closed)
             .await
             .unwrap();
+    }
+
+    /// `M9-2`: a root agent with `may_delegate: true` builds and wires a `SubagentRunner`
+    /// (`ctx.spawner`) as part of `spawn()`, entirely offline — no network access is needed to
+    /// construct the runner itself, only to actually run a subagent through it.
+    #[tokio::test]
+    async fn spawning_a_delegating_session_wires_a_spawner_without_touching_the_network() {
+        let backend = Arc::new(
+            Backend::huggingface("dummy-key", None, None).expect("offline client construction"),
+        );
+        let (mut manager, _events) = SessionManager::new(backend, 1);
+
+        let spec = crate::config::SessionSpec {
+            title: "t".to_string(),
+            root: std::path::PathBuf::from("."),
+            agent: crate::config::AgentSpec {
+                model: "org/model".to_string(),
+                sub_provider: None,
+                base_url: None,
+                preamble: String::new(),
+                temperature: 0.2,
+                max_tokens: 512,
+                max_turns: 4,
+                http: crate::config::HttpPolicy::default(),
+                may_delegate: true,
+                delegation: crate::config::DelegationPolicy::default(),
+            },
+            delegation: crate::config::DelegationPolicy::default(),
+            max_turns: 4,
+        };
+        let ctx = ToolCtx {
+            agent: AgentId::ROOT,
+            root: std::path::PathBuf::from("."),
+            max_output_bytes: 1_000_000,
+            spawner: None,
+            activity: tokio::sync::mpsc::channel(1).0,
+            cancel: CancellationToken::new(),
+        };
+
+        let handle = manager.spawn(&spec, ctx);
+        assert!(handle.is_ok());
+
+        manager.close(handle.unwrap().id).await;
     }
 }

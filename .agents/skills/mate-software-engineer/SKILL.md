@@ -77,6 +77,12 @@ resolver `3`.
   a live-network test run unattended or in CI.
 - Extend existing config/logging/error modules rather than adding a second
   mechanism that does the same job.
+- Every `assert_eq!`/`assert_ne!` in a test takes a third-argument message
+  explaining *what's expected and why*, not just restating the values (the
+  values already print on failure). Write it as the fact under test, e.g.
+  `assert_eq!(report.turns, 2, "one completion call per mock stream turn")` —
+  a future reader debugging a red test should learn the intent from the
+  message alone, without reading the surrounding test body first.
 
 ## Ratatui / TUI notes (`mate-tui`, `M7`+)
 

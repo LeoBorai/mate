@@ -4712,6 +4712,7 @@ dependencies = [
 name = "mate-core"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "fastrand",
  "futures",
  "http 1.5.0",
@@ -4738,10 +4739,14 @@ dependencies = [
 name = "mate-tool-agent"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "mate-tool-api",
  "rig",
  "schemars 1.2.2",
  "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]

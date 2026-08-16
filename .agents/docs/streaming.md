@@ -11,9 +11,12 @@ provider match and calls `streaming::stream_turn` underneath.
   has to be retrofitted onto an existing event type later.
 - `AgentEvent` — one event per streamed item: `Token`, `ToolCallStarted`,
   `ToolResult`, `ApprovalRequired`, `SubagentSpawned`, `SubagentFinished`,
-  `Usage`, `TurnComplete`, `Error`. Several variants (`ApprovalRequired`,
-  `SubagentSpawned`/`Finished`) have no producer yet — they exist so the
-  session/panel work that does produce them isn't a breaking enum change.
+  `Usage`, `TurnComplete`, `Error`. `SubagentSpawned`/`Finished` are now
+  produced by `mate-core/src/subagent.rs`'s `drive_subagent` (`M9`), tagged
+  with the subagent's own `AgentId`, not `AgentId::ROOT` — the routing key the
+  side panel (`M12`) will use. `ApprovalRequired` still has no producer
+  (`M13`) — it exists so the approval-flow work that does produce it isn't a
+  breaking enum change.
 - `SubagentOutcome` — `Completed{summary}` / `Failed{reason}` / `Cancelled` /
   `TimedOut`. Same "define before there's a producer" reasoning.
 - `AgentEventEnvelope { agent: AgentId, event: AgentEvent }` — every event is
@@ -72,7 +75,9 @@ Two separate match functions, on purpose:
 ## Usage
 
 `UsageRollup { root, subagents, per_turn }` accumulates token usage across
-turns; `subagents` stays at the zero sentinel until subagent runtime exists.
+turns; `subagents` stays at the zero sentinel — nothing in `mate-core::session`
+folds a `SubagentReport::usage` into it yet, since `UsageRollup` itself isn't
+wired into the session task at all until `M11`'s usage/cost work lands.
 `record_root_turn(usage)` folds one completed turn's `Usage` into `root` and
 pushes its `input_tokens` onto `per_turn` (sent-tokens-per-turn, oldest
 first — the raw data a sparkline would read; any windowing/capping for

@@ -53,11 +53,15 @@ pub async fn run(cli: &Cli, config: &Config) -> Result<(), MateError> {
         .map_err(|err| classify_verify_error(ProviderError::classify(&err)))?;
 
     let workspace_root = resolve_workspace_root(cli)?;
+    // Always `false`: this frontend never routes through `mate_core::session::SessionManager`
+    // (see this module's doc comment), so there's no `SubagentSpawner` to give `ctx.spawner`
+    // below — advertising `spawn_agent` here would tell the model about a tool
+    // `toolset::build_toolset` (gated on `ctx.spawner.is_some()`) would never actually attach.
     let preamble = render_preamble(
         PreambleRole::Root,
         &workspace_root,
         std::env::consts::OS,
-        &tool_descriptors(),
+        &tool_descriptors(false),
     );
 
     let spec = AgentSpec {
@@ -69,7 +73,9 @@ pub async fn run(cli: &Cli, config: &Config) -> Result<(), MateError> {
         max_tokens: DEFAULT_MAX_TOKENS,
         max_turns: config.max_turns,
         http: config.http.clone(),
-        may_delegate: config.delegation.enabled,
+        // Always `false` here for the same reason `tool_descriptors(false)` is above: no
+        // `SessionManager` in this frontend means no `SubagentSpawner` ever reaches `ctx`.
+        may_delegate: false,
         delegation: config.delegation.clone(),
     };
 
