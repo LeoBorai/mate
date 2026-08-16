@@ -533,7 +533,10 @@ mod tests {
                 MockStreamEvent::final_response_with_total_tokens(7),
             ],
         ]);
-        let agent = AgentBuilder::new(model).tool(MockAddTool).build();
+        let agent = AgentBuilder::new(model)
+            .tool(MockAddTool)
+            .default_max_turns(2)
+            .build();
         let session = session_id();
         let (events_tx, mut events) = mpsc::channel(64);
         let cancel = CancellationToken::new();
