@@ -43,6 +43,14 @@ impl Entry {
     }
 }
 
+/// Result of [`Transcript::push_token`]: the entry whose text just changed (new or appended-to,
+/// always present so the caller can invalidate that id's [`crate::wrap::WrapCache`] entry), plus
+/// the id evicted by the cap, if any.
+pub struct TokenPush {
+    pub changed: EntryId,
+    pub evicted: Option<EntryId>,
+}
+
 pub struct Transcript {
     entries: VecDeque<Entry>,
     next_id: EntryId,
@@ -86,20 +94,27 @@ impl Transcript {
 
     /// Appends one streamed token, opening a new assistant entry first if the last one isn't
     /// still receiving tokens (text and tool calls interleave within a turn, §4.1).
-    pub fn push_token(&mut self, text: &str) -> Option<EntryId> {
+    pub fn push_token(&mut self, text: &str) -> TokenPush {
         if let Some(id) = self.open_assistant
             && let Some(Entry::Assistant { text: existing, .. }) =
                 self.entries.iter_mut().rev().find(|e| e.id() == id)
         {
             existing.push_str(text);
-            return None;
+            return TokenPush {
+                changed: id,
+                evicted: None,
+            };
         }
         let evicted = self.push(|id| Entry::Assistant {
             id,
             text: text.to_string(),
         });
-        self.open_assistant = Some(self.next_id - 1);
-        evicted
+        let id = self.next_id - 1;
+        self.open_assistant = Some(id);
+        TokenPush {
+            changed: id,
+            evicted,
+        }
     }
 
     pub fn push_tool_call(&mut self, name: String) -> Option<EntryId> {
@@ -178,6 +193,22 @@ mod tests {
                 text: "Hello".to_string()
             })
         );
+    }
+
+    /// Regression: an append to the already-open entry must report that entry's id as
+    /// `changed` (not just `evicted: None`), so the caller can invalidate its `WrapCache`
+    /// entry every token — otherwise the rendered wrap freezes at whatever the first token
+    /// produced.
+    #[test]
+    fn push_token_reports_the_open_entrys_id_as_changed_even_when_not_evicted() {
+        let mut t = Transcript::new();
+        let first = t.push_token("Hel");
+        assert_eq!(first.changed, 0);
+        assert_eq!(first.evicted, None);
+
+        let second = t.push_token("lo");
+        assert_eq!(second.changed, 0);
+        assert_eq!(second.evicted, None);
     }
 
     #[test]
