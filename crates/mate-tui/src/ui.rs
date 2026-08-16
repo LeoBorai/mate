@@ -9,6 +9,10 @@
 //! No test module here (see `.agents/docs/testing.md`) — rendering/layout tests were dropped as
 //! not worth their upkeep.
 
+use std::collections::VecDeque;
+use std::path::Path;
+
+use mate_tool_api::{AgentId, FileOp};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -17,6 +21,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::app::SpawnField;
 use crate::input::InputBox;
+use crate::panel::{DocRow, NetRow};
 use crate::transcript::{Entry, Transcript};
 use crate::wrap::WrapCache;
 
@@ -30,6 +35,15 @@ const STATUS_BAR_HEIGHT: u16 = 1;
 /// Tab titles longer than this are middle-truncated with `…` — keeps every tab's width
 /// bounded, which is what makes the overflow math in [`tab_bar_segments`] tractable.
 const MAX_TAB_TITLE: usize = 10;
+
+/// Rows of each panel log actually drawn, beyond the header (§9.7/§9.8) — the ring buffers
+/// themselves hold up to 50; only the newest few are worth screen space.
+const NETWORK_SHOWN: usize = 6;
+const DOCUMENTS_SHOWN: usize = 6;
+/// §9.1's target/floor/ceiling for the side panel's width, in columns.
+const PANEL_TARGET_RATIO: (u32, u32) = (3, 12);
+const PANEL_MIN_COLS: u16 = 24;
+const PANEL_MAX_COLS: u16 = 40;
 
 /// One tab's worth of state the tab bar needs to render it (`M8-1`/`M8-4`) — owned rather than
 /// borrowed, since it's cheap to clone a handful of these per frame and doing so sidesteps
@@ -54,6 +68,16 @@ pub(crate) struct View<'a> {
     pub(crate) tokens_received: u64,
     pub(crate) quit_armed: bool,
     pub(crate) close_confirm: bool,
+    /// Workspace root the documents log (§9.8) renders paths relative to.
+    pub(crate) root: &'a Path,
+    /// `Ctrl+B` (§9.12) — whether this tab's panel is shown at all, independent of whether the
+    /// terminal is even wide enough for it (`panel_width` below folds both checks together).
+    pub(crate) panel_visible: bool,
+    pub(crate) network: &'a VecDeque<NetRow>,
+    pub(crate) documents: &'a VecDeque<DocRow>,
+    /// Network requests since the last prompt was sent — the network widget's per-turn header
+    /// count (§9.7).
+    pub(crate) network_turn_requests: u32,
 }
 
 /// `Ctrl+T`'s spawn form (`M8-3`), borrowed for one frame's render. `error`, when set, is shown
@@ -83,11 +107,40 @@ pub(crate) fn draw(f: &mut Frame<'_>, view: &mut AppView<'_>) {
     ])
     .areas(area);
     render_tab_bar(f, tab_area, &view.tabs, view.active);
-    draw_body(f, body_area, &mut view.session);
+
+    // §9.1: the panel is inside the tab body, to the left, never a global sidebar — wrapping
+    // the existing vertical split (`draw_body`) in an outer horizontal one, rather than
+    // touching that split itself.
+    match panel_width(body_area.width, view.session.panel_visible) {
+        0 => draw_body(f, body_area, &mut view.session),
+        cols => {
+            let [panel_area, main_area] =
+                Layout::horizontal([Constraint::Length(cols), Constraint::Min(0)]).areas(body_area);
+            render_panel(f, panel_area, &view.session);
+            draw_body(f, main_area, &mut view.session);
+        }
+    }
+
     render_status_bar(f, status_area, &view.session);
     if let Some(form) = &view.spawn_form {
         render_spawn_form(f, area, form);
     }
+}
+
+/// The panel's column width, or `0` when it shouldn't render at all — hidden by `Ctrl+B`, or
+/// auto-hidden because `PANEL_TARGET_RATIO` of `body_width` doesn't clear `PANEL_MIN_COLS`
+/// (§9.1: below a ~96-column total width, 3/12 lands under 24 and the panel disappears rather
+/// than rendering unreadably narrow).
+fn panel_width(body_width: u16, visible: bool) -> u16 {
+    if !visible {
+        return 0;
+    }
+    let (num, den) = PANEL_TARGET_RATIO;
+    let candidate = (body_width as u32 * num / den) as u16;
+    if candidate < PANEL_MIN_COLS {
+        return 0;
+    }
+    candidate.clamp(PANEL_MIN_COLS, PANEL_MAX_COLS)
 }
 
 fn draw_body(f: &mut Frame<'_>, area: Rect, view: &mut View<'_>) {
@@ -391,6 +444,133 @@ fn render_status_bar(f: &mut Frame<'_>, area: Rect, view: &View<'_>) {
         view.provider, view.model, view.tokens_sent, view.tokens_received
     ));
     f.render_widget(Paragraph::new(line).style(style), area);
+}
+
+/// The side panel (`Ctrl+B`, §9.1): network log stacked over documents log, each a header row
+/// plus up to its `_SHOWN` cap of entries. Narrowed `M12` — no model/context/subagent-roster
+/// widgets, no vertical-budget collapse order (§9.2/§9.3), no focus/navigation (§9.12): just
+/// the two tool-activity logs, always full height, clipped by `Paragraph` if the terminal is
+/// too short rather than collapsing to a one-line summary.
+fn render_panel(f: &mut Frame<'_>, area: Rect, view: &View<'_>) {
+    let network_rows = view.network.len().min(NETWORK_SHOWN) as u16;
+    let network_height = (network_rows + 1).min(area.height);
+    let [network_area, documents_area] =
+        Layout::vertical([Constraint::Length(network_height), Constraint::Min(0)]).areas(area);
+    render_network_log(f, network_area, view);
+    render_documents_log(f, documents_area, view);
+}
+
+fn panel_header(text: &str) -> Line<'static> {
+    Line::from(Span::styled(
+        text.to_string(),
+        Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::BOLD),
+    ))
+}
+
+fn render_network_log(f: &mut Frame<'_>, area: Rect, view: &View<'_>) {
+    let mut lines = vec![panel_header(&format!(
+        "NETWORK · {}↑",
+        view.network_turn_requests
+    ))];
+    lines.extend(
+        view.network
+            .iter()
+            .take(NETWORK_SHOWN)
+            .map(|row| net_row_line(row, area.width)),
+    );
+    f.render_widget(Paragraph::new(lines), area);
+}
+
+fn render_documents_log(f: &mut Frame<'_>, area: Rect, view: &View<'_>) {
+    let mut lines = vec![panel_header("DOCUMENTS")];
+    lines.extend(
+        view.documents
+            .iter()
+            .take(DOCUMENTS_SHOWN)
+            .map(|row| doc_row_line(row, view.root, area.width)),
+    );
+    f.render_widget(Paragraph::new(lines), area);
+}
+
+/// `200 docs.rs/rig-core 412ms` for a request that reached a server; `BLK 169.254.169.254
+/// link-local` for one an SSRF guard refused before it did (§9.7). A subagent's row is
+/// prefixed with its id — the roster widget that would otherwise carry its label is out of
+/// this narrowed panel's scope.
+fn net_row_line(row: &NetRow, width: u16) -> Line<'static> {
+    let (status_text, style) = match row.status {
+        Some(code) if (200..300).contains(&code) => (
+            code.to_string(),
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::DIM),
+        ),
+        Some(code) if (300..400).contains(&code) => (
+            code.to_string(),
+            Style::default().add_modifier(Modifier::DIM),
+        ),
+        Some(code) => (code.to_string(), Style::default().fg(Color::Red)),
+        None => ("BLK".to_string(), Style::default().fg(Color::Red)),
+    };
+    let agent_prefix = subagent_prefix(row.agent);
+    let budget = (width as usize)
+        .saturating_sub(status_text.len() + agent_prefix.len() + 2)
+        .max(1);
+    let detail = match &row.reason {
+        Some(reason) => middle_truncate(&format!("{} {reason}", row.host), budget),
+        None => middle_truncate(&format!("{}{} {}ms", row.host, row.path, row.ms), budget),
+    };
+    Line::from(Span::styled(
+        format!("{agent_prefix}{status_text} {detail}"),
+        style,
+    ))
+}
+
+/// `R Cargo.toml 24L` (§9.8) — `R`/`W`/`+`/`−` for read/write/create/delete, path relative to
+/// the workspace root and middle-truncated so the filename always survives.
+fn doc_row_line(row: &DocRow, root: &Path, width: u16) -> Line<'static> {
+    let op = match row.op {
+        FileOp::Read => "R",
+        FileOp::Write => "W",
+        FileOp::Create => "+",
+        FileOp::Delete => "−",
+    };
+    let relative = row.path.strip_prefix(root).unwrap_or(&row.path);
+    let agent_prefix = subagent_prefix(row.agent);
+    let budget = (width as usize)
+        .saturating_sub(op.len() + agent_prefix.len() + 8)
+        .max(1);
+    let path = middle_truncate(&relative.to_string_lossy(), budget);
+    Line::from(format!("{agent_prefix}{op} {path} {}L", row.lines))
+}
+
+fn subagent_prefix(agent: AgentId) -> String {
+    if agent == AgentId::ROOT {
+        String::new()
+    } else {
+        format!("[{}] ", agent.0)
+    }
+}
+
+/// Truncates `s` to at most `budget` chars, keeping the tail (which usually carries the
+/// filename) intact by dropping from the middle — `crates/…/lib.rs` rather than
+/// `crates/mate-…` (§9.8: "the filename is the identifying part").
+fn middle_truncate(s: &str, budget: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= budget {
+        return s.to_string();
+    }
+    if budget <= 1 {
+        return "…".to_string();
+    }
+    let keep = budget - 1;
+    let tail = keep * 2 / 3;
+    let head = keep - tail;
+    let mut out: String = chars[..head].iter().collect();
+    out.push('…');
+    out.extend(&chars[chars.len() - tail..]);
+    out
 }
 
 fn input_height(view: &View<'_>) -> u16 {

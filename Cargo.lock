@@ -4792,6 +4792,7 @@ dependencies = [
  "crossterm",
  "dunce",
  "futures",
+ "http 1.5.0",
  "mate-core",
  "mate-tool-api",
  "mate-tool-http",
