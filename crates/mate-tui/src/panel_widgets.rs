@@ -154,7 +154,7 @@ impl PanelWidget for ModelWidget {
     fn render(&self, f: &mut Frame<'_>, area: Rect, view: &PanelView<'_>, _collapsed: bool) {
         let width = area.width as usize;
         let mut lines = vec![
-            panel_header("MODEL"),
+            panel_header(self.title()),
             Line::from(truncate_left(view.model, width)),
         ];
         let provider_line = match view.subagent_model {
@@ -230,7 +230,7 @@ impl PanelWidget for ContextWidget {
         let live_marker = if view.running_turn { " +…" } else { "" };
         let lines = if view.context_split {
             vec![
-                panel_header("CONTEXT · root/sub"),
+                panel_header(&format!("{} · root/sub", self.title())),
                 Line::from(format!(
                     "root  {}↑ {}↓",
                     format_tokens(view.usage.root.input_tokens),
@@ -250,7 +250,7 @@ impl PanelWidget for ContextWidget {
             let spark_width = width.saturating_sub(16);
             let spark = sparkline(&view.usage.per_turn, spark_width);
             vec![
-                panel_header("CONTEXT"),
+                panel_header(self.title()),
                 Line::from(format!(
                     "sent  {}{live_marker}  {spark}",
                     format_tokens(sent)
@@ -286,7 +286,7 @@ impl PanelWidget for SubagentRosterWidget {
             .iter()
             .filter(|r| !r.status.is_terminal())
             .count();
-        let mut header = format!("SUBAGENTS  {running}/{}", view.subagents.len());
+        let mut header = format!("{}  {running}/{}", self.title(), view.subagents.len());
         if hidden > 0 {
             header.push_str(&format!(" +{hidden} more"));
         }
@@ -340,7 +340,7 @@ impl PanelWidget for NetworkLogWidget {
     }
 
     fn render(&self, f: &mut Frame<'_>, area: Rect, view: &PanelView<'_>, collapsed: bool) {
-        let header = format!("NETWORK · {}↑", view.network_turn_requests);
+        let header = format!("{} · {}↑", self.title(), view.network_turn_requests);
         let mut lines = vec![panel_header_marker(&header, collapsed)];
         let shown = area.height.saturating_sub(1) as usize;
         let focused_row = view.row_focus(PanelWidgetKind::Network);
@@ -365,7 +365,7 @@ impl PanelWidget for DocumentsLogWidget {
     }
 
     fn render(&self, f: &mut Frame<'_>, area: Rect, view: &PanelView<'_>, collapsed: bool) {
-        let mut lines = vec![panel_header_marker("DOCUMENTS", collapsed)];
+        let mut lines = vec![panel_header_marker(self.title(), collapsed)];
         let shown = area.height.saturating_sub(1) as usize;
         let focused_row = view.row_focus(PanelWidgetKind::Documents);
         for (i, row) in view.documents.iter().take(shown).enumerate() {
