@@ -4798,6 +4798,7 @@ dependencies = [
  "mate-tool-http",
  "ratatui",
  "ratatui-textarea",
+ "rig",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",

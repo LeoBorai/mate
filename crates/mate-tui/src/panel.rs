@@ -1,9 +1,9 @@
-//! Tool activity log data for the side panel (§9.3/§9.7/§9.8) — a narrowed slice of the full
-//! `M12` agent status panel (model/context/subagent-roster widgets aren't part of this): just
-//! the network and documents logs, folded from `ToolActivity` records off the shared
-//! `AgentId`-tagged sink `M11-4` wired up. Kept on [`crate::app::SessionTab`], never on `App`
-//! (§9.1) — a tab rooted at one workspace showing another tab's file reads would be actively
-//! misleading.
+//! Network/documents activity log data for the side panel (§9.3/§9.7/§9.8) — the ring-buffered
+//! half of the full `M12` [`crate::panel_widgets::AgentStatusPanel`] (model/context/subagent-
+//! roster live in [`crate::app::SessionTab`] and [`crate::roster::Roster`] instead), folded
+//! from `ToolActivity` records off the shared `AgentId`-tagged sink `M11-4` wired up. Kept on
+//! [`crate::app::SessionTab`], never on `App` (§9.1) — a tab rooted at one workspace showing
+//! another tab's file reads would be actively misleading.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;

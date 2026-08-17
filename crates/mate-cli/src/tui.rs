@@ -3,10 +3,12 @@
 //! `-C`/`--dir` path; `mate_tui::SessionDefaults` carries everything a tab opened later, via the
 //! TUI's own `Ctrl+T` spawn form, needs to build the same kind of session.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
 use mate_core::backend::Backend;
+use mate_core::cost::ModelRate;
 use mate_core::provider_error::ProviderError;
 use mate_core::session::SessionManager;
 use mate_tool_http::HttpShared;
@@ -48,6 +50,7 @@ pub async fn run(cli: &crate::cli::Cli, config: &Config) -> Result<(), MateError
     let (mut manager, events_rx) =
         SessionManager::new(Arc::new(backend), http, config.max_sessions);
     let provider = defaults.provider_label();
+    let subagent_model = defaults.subagent_model_label();
 
     let mut sessions = Vec::with_capacity(roots.len());
     for root in &roots {
@@ -64,10 +67,25 @@ pub async fn run(cli: &crate::cli::Cli, config: &Config) -> Result<(), MateError
             model: defaults.model.clone(),
             provider: provider.clone(),
             root: root.clone(),
+            subagent_model: subagent_model.clone(),
         });
     }
 
-    mate_tui::run(manager, events_rx, sessions, defaults)
+    let pricing: HashMap<String, ModelRate> = config
+        .pricing
+        .iter()
+        .map(|(model, entry)| {
+            (
+                model.clone(),
+                ModelRate {
+                    input_per_million: entry.input,
+                    output_per_million: entry.output,
+                },
+            )
+        })
+        .collect();
+
+    mate_tui::run(manager, events_rx, sessions, defaults, pricing)
         .await
         .map_err(|err| MateError::Io(anyhow::anyhow!(err)))
 }

@@ -37,9 +37,10 @@
 //! `(AgentId, ToolActivity)` item type, so no extra wiring is needed here to keep that
 //! attribution straight).
 
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -93,6 +94,12 @@ pub struct SubagentRunner {
     /// `0` is `AgentId::ROOT`; every subagent in the session gets the next value, regardless of
     /// which depth spawned it.
     next_agent_id: Arc<AtomicU32>,
+    /// Every currently-running subagent's own cancellation token, keyed by its `AgentId`
+    /// (`M12-9`) — the panel's `x` key reaches in here rather than through `session_cancel`,
+    /// which would cancel the whole turn. Populated in [`Self::run`] right after the token is
+    /// created, removed once that subagent's report is ready; shared (not per-depth) the same
+    /// way `next_agent_id` is, since ids are unique session-wide regardless of depth.
+    subagent_cancels: Arc<Mutex<HashMap<AgentId, CancellationToken>>>,
 }
 
 impl SubagentRunner {
@@ -131,6 +138,21 @@ impl SubagentRunner {
             concurrency: Arc::new(Semaphore::new(max_concurrent)),
             turn_spawns: Arc::new(AtomicUsize::new(0)),
             next_agent_id: Arc::new(AtomicU32::new(1)),
+            subagent_cancels: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// Cancels one running subagent by id (`M12-9`'s `x` key), without touching the session's
+    /// own turn or any other subagent. Returns `false` if `id` isn't currently running —
+    /// already finished, or never existed — so the caller can tell "nothing happened" from
+    /// "cancelled".
+    pub fn cancel(&self, id: AgentId) -> bool {
+        match self.subagent_cancels.lock().expect("not poisoned").get(&id) {
+            Some(token) => {
+                token.cancel();
+                true
+            }
+            None => false,
         }
     }
 
@@ -164,6 +186,7 @@ impl SubagentRunner {
             concurrency: self.concurrency.clone(),
             turn_spawns: self.turn_spawns.clone(),
             next_agent_id: self.next_agent_id.clone(),
+            subagent_cancels: self.subagent_cancels.clone(),
         })
     }
 
@@ -211,6 +234,10 @@ impl SubagentSpawner for SubagentRunner {
         let (agent_id, _permit, may_delegate) = self.acquire().await?;
 
         let cancel = request.cancel.child_token();
+        self.subagent_cancels
+            .lock()
+            .expect("not poisoned")
+            .insert(agent_id, cancel.clone());
         let ctx = ToolCtx {
             agent: agent_id,
             root: self.root.clone(),
@@ -284,6 +311,10 @@ impl SubagentSpawner for SubagentRunner {
                 .await
             }
         };
+        self.subagent_cancels
+            .lock()
+            .expect("not poisoned")
+            .remove(&agent_id);
 
         Ok(report)
     }
@@ -502,6 +533,29 @@ mod tests {
 
         runner.reset_turn();
         assert!(runner.acquire().await.is_ok());
+    }
+
+    // --- `cancel` (`M12-9`): per-subagent cancellation, without going through `run` --------
+
+    #[tokio::test]
+    async fn cancel_fires_the_matching_tokens_cancellation_and_reports_whether_it_found_one() {
+        let (runner, _events) = runner(DelegationPolicy::default());
+        let token = CancellationToken::new();
+        runner
+            .subagent_cancels
+            .lock()
+            .expect("not poisoned")
+            .insert(AgentId(1), token.clone());
+
+        assert!(
+            runner.cancel(AgentId(1)),
+            "a registered id must be found and cancelled"
+        );
+        assert!(token.is_cancelled());
+        assert!(
+            !runner.cancel(AgentId(99)),
+            "an id with no registered token must report false, not panic"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

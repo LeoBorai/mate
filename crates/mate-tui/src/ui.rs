@@ -12,7 +12,8 @@
 use std::collections::VecDeque;
 use std::path::Path;
 
-use mate_tool_api::{AgentId, FileOp};
+use mate_core::cost::CostEstimate;
+use mate_core::streaming::UsageRollup;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -22,6 +23,8 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use crate::app::SpawnField;
 use crate::input::InputBox;
 use crate::panel::{DocRow, NetRow};
+use crate::panel_widgets::{AgentStatusPanel, PanelFocus, PanelView};
+use crate::roster::SubagentRow;
 use crate::transcript::{Entry, Transcript};
 use crate::wrap::WrapCache;
 
@@ -36,10 +39,6 @@ const STATUS_BAR_HEIGHT: u16 = 1;
 /// bounded, which is what makes the overflow math in [`tab_bar_segments`] tractable.
 const MAX_TAB_TITLE: usize = 10;
 
-/// Rows of each panel log actually drawn, beyond the header (§9.7/§9.8) — the ring buffers
-/// themselves hold up to 50; only the newest few are worth screen space.
-const NETWORK_SHOWN: usize = 6;
-const DOCUMENTS_SHOWN: usize = 6;
 /// §9.1's target/floor/ceiling for the side panel's width, in columns.
 const PANEL_TARGET_RATIO: (u32, u32) = (3, 12);
 const PANEL_MIN_COLS: u16 = 24;
@@ -64,8 +63,10 @@ pub(crate) struct View<'a> {
     pub(crate) running_turn: bool,
     pub(crate) model: &'a str,
     pub(crate) provider: &'a str,
-    pub(crate) tokens_sent: u64,
-    pub(crate) tokens_received: u64,
+    pub(crate) subagent_model: Option<&'a str>,
+    pub(crate) usage: &'a UsageRollup,
+    pub(crate) cost: CostEstimate,
+    pub(crate) context_split: bool,
     pub(crate) quit_armed: bool,
     pub(crate) close_confirm: bool,
     /// Workspace root the documents log (§9.8) renders paths relative to.
@@ -73,11 +74,15 @@ pub(crate) struct View<'a> {
     /// `Ctrl+B` (§9.12) — whether this tab's panel is shown at all, independent of whether the
     /// terminal is even wide enough for it (`panel_width` below folds both checks together).
     pub(crate) panel_visible: bool,
+    pub(crate) subagents: &'a VecDeque<SubagentRow>,
     pub(crate) network: &'a VecDeque<NetRow>,
     pub(crate) documents: &'a VecDeque<DocRow>,
     /// Network requests since the last prompt was sent — the network widget's per-turn header
     /// count (§9.7).
     pub(crate) network_turn_requests: u32,
+    /// `Ctrl+P`/`Tab`/arrows (`M12-9`) — `None` when the panel doesn't have focus, in which
+    /// case every panel key falls through to the input box as normal.
+    pub(crate) panel_focus: Option<PanelFocus>,
 }
 
 /// `Ctrl+T`'s spawn form (`M8-3`), borrowed for one frame's render. `error`, when set, is shown
@@ -91,11 +96,19 @@ pub(crate) struct SpawnFormView<'a> {
     pub(crate) error: Option<&'a str>,
 }
 
+/// `Enter` on a focused panel row (`M12-9`), borrowed for one frame's render — see
+/// `crate::app::DetailModal` for how it's built.
+pub(crate) struct DetailModalView<'a> {
+    pub(crate) title: &'a str,
+    pub(crate) lines: &'a [String],
+}
+
 pub(crate) struct AppView<'a> {
     pub(crate) tabs: Vec<TabSummary>,
     pub(crate) active: usize,
     pub(crate) session: View<'a>,
     pub(crate) spawn_form: Option<SpawnFormView<'a>>,
+    pub(crate) detail_modal: Option<DetailModalView<'a>>,
 }
 
 pub(crate) fn draw(f: &mut Frame<'_>, view: &mut AppView<'_>) {
@@ -125,6 +138,27 @@ pub(crate) fn draw(f: &mut Frame<'_>, view: &mut AppView<'_>) {
     if let Some(form) = &view.spawn_form {
         render_spawn_form(f, area, form);
     }
+    if let Some(modal) = &view.detail_modal {
+        render_detail_modal(f, area, modal);
+    }
+}
+
+/// `Enter` on a focused panel row (`M12-9`): a small centered read-only popup, same shape as
+/// [`render_spawn_form`]'s but with no fields to edit — `Esc`/`Enter` both close it.
+fn render_detail_modal(f: &mut Frame<'_>, area: Rect, modal: &DetailModalView<'_>) {
+    let width = area.width.saturating_sub(4).clamp(20, 60);
+    let height = (modal.lines.len() as u16 + 2).min(area.height);
+    let popup = centered_rect(width, height, area);
+
+    f.render_widget(Clear, popup);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" {} — Esc/Enter to close ", modal.title));
+    let inner = block.inner(popup);
+    f.render_widget(block, popup);
+
+    let lines: Vec<Line<'static>> = modal.lines.iter().map(|l| Line::from(l.clone())).collect();
+    f.render_widget(Paragraph::new(lines), inner);
 }
 
 /// The panel's column width, or `0` when it shouldn't render at all — hidden by `Ctrl+B`, or
@@ -434,143 +468,46 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     }
 }
 
-/// Bottom status bar (deprecates the old left model/provider panel): a single row, no border,
-/// filled with a solid gray background — glyphs stand in for labels so the values (provider,
-/// agent model, tokens sent/received) fit without eating transcript width.
+/// Bottom status bar: a single row, no border, filled with a solid gray background. Doubles
+/// as §9.1's "collapsed one-line status fallback" — it renders unconditionally, panel visible
+/// or not, so the numbers (streaming state, tokens, cost, network count) stay reachable even
+/// on a terminal too narrow for the panel itself.
 fn render_status_bar(f: &mut Frame<'_>, area: Rect, view: &View<'_>) {
     let style = Style::default().bg(Color::DarkGray).fg(Color::White);
+    let sent = view.usage.root.input_tokens + view.usage.subagents.input_tokens;
+    let recv = view.usage.root.output_tokens + view.usage.subagents.output_tokens;
+    let streaming = if view.running_turn { "⣾ " } else { "" };
+    let cost = if view.cost.known {
+        format!("~${:.2}", view.cost.total_usd)
+    } else {
+        "~$?".to_string()
+    };
     let line = Line::from(format!(
-        " 📡 {}  🤖 {}  ↑{}  ↓{}",
-        view.provider, view.model, view.tokens_sent, view.tokens_received
+        " {streaming}📡 {}  🤖 {}  ↑{sent}  ↓{recv}  {cost}  net {}↑",
+        view.provider, view.model, view.network_turn_requests
     ));
     f.render_widget(Paragraph::new(line).style(style), area);
 }
 
-/// The side panel (`Ctrl+B`, §9.1): network log stacked over documents log, each a header row
-/// plus up to its `_SHOWN` cap of entries. Narrowed `M12` — no model/context/subagent-roster
-/// widgets, no vertical-budget collapse order (§9.2/§9.3), no focus/navigation (§9.12): just
-/// the two tool-activity logs, always full height, clipped by `Paragraph` if the terminal is
-/// too short rather than collapsing to a one-line summary.
+/// The side panel (`Ctrl+B`, §9.1): delegates to [`AgentStatusPanel`] (`M12-1`'s five-widget
+/// stack, its own vertical-budget allocation, and per-widget focus/navigation).
 fn render_panel(f: &mut Frame<'_>, area: Rect, view: &View<'_>) {
-    let network_rows = view.network.len().min(NETWORK_SHOWN) as u16;
-    let network_height = (network_rows + 1).min(area.height);
-    let [network_area, documents_area] =
-        Layout::vertical([Constraint::Length(network_height), Constraint::Min(0)]).areas(area);
-    render_network_log(f, network_area, view);
-    render_documents_log(f, documents_area, view);
-}
-
-fn panel_header(text: &str) -> Line<'static> {
-    Line::from(Span::styled(
-        text.to_string(),
-        Style::default()
-            .fg(Color::DarkGray)
-            .add_modifier(Modifier::BOLD),
-    ))
-}
-
-fn render_network_log(f: &mut Frame<'_>, area: Rect, view: &View<'_>) {
-    let mut lines = vec![panel_header(&format!(
-        "NETWORK · {}↑",
-        view.network_turn_requests
-    ))];
-    lines.extend(
-        view.network
-            .iter()
-            .take(NETWORK_SHOWN)
-            .map(|row| net_row_line(row, area.width)),
-    );
-    f.render_widget(Paragraph::new(lines), area);
-}
-
-fn render_documents_log(f: &mut Frame<'_>, area: Rect, view: &View<'_>) {
-    let mut lines = vec![panel_header("DOCUMENTS")];
-    lines.extend(
-        view.documents
-            .iter()
-            .take(DOCUMENTS_SHOWN)
-            .map(|row| doc_row_line(row, view.root, area.width)),
-    );
-    f.render_widget(Paragraph::new(lines), area);
-}
-
-/// `200 docs.rs/rig-core 412ms` for a request that reached a server; `BLK 169.254.169.254
-/// link-local` for one an SSRF guard refused before it did (§9.7). A subagent's row is
-/// prefixed with its id — the roster widget that would otherwise carry its label is out of
-/// this narrowed panel's scope.
-fn net_row_line(row: &NetRow, width: u16) -> Line<'static> {
-    let (status_text, style) = match row.status {
-        Some(code) if (200..300).contains(&code) => (
-            code.to_string(),
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::DIM),
-        ),
-        Some(code) if (300..400).contains(&code) => (
-            code.to_string(),
-            Style::default().add_modifier(Modifier::DIM),
-        ),
-        Some(code) => (code.to_string(), Style::default().fg(Color::Red)),
-        None => ("BLK".to_string(), Style::default().fg(Color::Red)),
+    let panel_view = PanelView {
+        model: view.model,
+        provider: view.provider,
+        subagent_model: view.subagent_model,
+        usage: view.usage,
+        cost: view.cost,
+        context_split: view.context_split,
+        running_turn: view.running_turn,
+        subagents: view.subagents,
+        network: view.network,
+        documents: view.documents,
+        network_turn_requests: view.network_turn_requests,
+        root: view.root,
+        focus: view.panel_focus,
     };
-    let agent_prefix = subagent_prefix(row.agent);
-    let budget = (width as usize)
-        .saturating_sub(status_text.len() + agent_prefix.len() + 2)
-        .max(1);
-    let detail = match &row.reason {
-        Some(reason) => middle_truncate(&format!("{} {reason}", row.host), budget),
-        None => middle_truncate(&format!("{}{} {}ms", row.host, row.path, row.ms), budget),
-    };
-    Line::from(Span::styled(
-        format!("{agent_prefix}{status_text} {detail}"),
-        style,
-    ))
-}
-
-/// `R Cargo.toml 24L` (§9.8) — `R`/`W`/`+`/`−` for read/write/create/delete, path relative to
-/// the workspace root and middle-truncated so the filename always survives.
-fn doc_row_line(row: &DocRow, root: &Path, width: u16) -> Line<'static> {
-    let op = match row.op {
-        FileOp::Read => "R",
-        FileOp::Write => "W",
-        FileOp::Create => "+",
-        FileOp::Delete => "−",
-    };
-    let relative = row.path.strip_prefix(root).unwrap_or(&row.path);
-    let agent_prefix = subagent_prefix(row.agent);
-    let budget = (width as usize)
-        .saturating_sub(op.len() + agent_prefix.len() + 8)
-        .max(1);
-    let path = middle_truncate(&relative.to_string_lossy(), budget);
-    Line::from(format!("{agent_prefix}{op} {path} {}L", row.lines))
-}
-
-fn subagent_prefix(agent: AgentId) -> String {
-    if agent == AgentId::ROOT {
-        String::new()
-    } else {
-        format!("[{}] ", agent.0)
-    }
-}
-
-/// Truncates `s` to at most `budget` chars, keeping the tail (which usually carries the
-/// filename) intact by dropping from the middle — `crates/…/lib.rs` rather than
-/// `crates/mate-…` (§9.8: "the filename is the identifying part").
-fn middle_truncate(s: &str, budget: usize) -> String {
-    let chars: Vec<char> = s.chars().collect();
-    if chars.len() <= budget {
-        return s.to_string();
-    }
-    if budget <= 1 {
-        return "…".to_string();
-    }
-    let keep = budget - 1;
-    let tail = keep * 2 / 3;
-    let head = keep - tail;
-    let mut out: String = chars[..head].iter().collect();
-    out.push('…');
-    out.extend(&chars[chars.len() - tail..]);
-    out
+    AgentStatusPanel::new().render(f, area, &panel_view);
 }
 
 fn input_height(view: &View<'_>) -> u16 {
