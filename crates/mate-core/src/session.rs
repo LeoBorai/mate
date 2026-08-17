@@ -94,8 +94,16 @@ pub enum SessionStatus {
 #[derive(Debug, Clone)]
 pub enum SessionCmd {
     Prompt(String),
-    Approve { id: Ulid, granted: bool },
+    Approve {
+        id: Ulid,
+        granted: bool,
+    },
     Cancel,
+    /// Cancels one running subagent (`M12-9`'s `x` key) without touching the root turn or any
+    /// other subagent — routed to [`SubagentRunner::cancel`], never through `session_cancel`
+    /// or the turn-wide `turn_cancel` a plain `Cancel` uses. A no-op if the id isn't currently
+    /// running, or the session has no delegation runner at all.
+    CancelSubagent(AgentId),
     Shutdown,
 }
 
@@ -358,6 +366,7 @@ async fn session_task<M>(
                     &mut cmds,
                     &events_tx,
                     &status_tx,
+                    subagents.as_ref(),
                 )
                 .await;
                 if shutdown {
@@ -366,6 +375,8 @@ async fn session_task<M>(
             }
             // No turn in flight outside `run_prompt`, so a `Cancel` here has nothing to do.
             SessionCmd::Cancel => {}
+            // Same reasoning as `Cancel` above — no subagent can be running outside a turn.
+            SessionCmd::CancelSubagent(_) => {}
             // No approval flow exists until `M13`.
             SessionCmd::Approve { .. } => {}
             SessionCmd::Shutdown => {
@@ -392,6 +403,7 @@ async fn run_prompt<M>(
     cmds: &mut mpsc::Receiver<SessionCmd>,
     events_tx: &mpsc::Sender<SessionEvent>,
     status_tx: &watch::Sender<SessionStatus>,
+    subagents: Option<&Arc<SubagentRunner>>,
 ) -> bool
 where
     M: CompletionModel + 'static,
@@ -417,6 +429,11 @@ where
             outcome = &mut turn => break outcome,
             cmd = cmds.recv() => match cmd {
                 Some(SessionCmd::Cancel) => turn_cancel.cancel(),
+                Some(SessionCmd::CancelSubagent(agent_id)) => {
+                    if let Some(runner) = subagents {
+                        runner.cancel(agent_id);
+                    }
+                }
                 Some(SessionCmd::Shutdown) => {
                     shutdown = true;
                     session_cancel.cancel();
@@ -639,6 +656,31 @@ mod tests {
             }
         }
         assert_eq!(text, "hi there");
+
+        handle.send(SessionCmd::Shutdown).await.unwrap();
+        let mut status = handle.status.clone();
+        status
+            .wait_for(|s| *s == SessionStatus::Closed)
+            .await
+            .unwrap();
+    }
+
+    /// `M12-9`: `CancelSubagent` sent with no turn in flight — no session ever has one outside
+    /// `run_prompt` — must be accepted and dropped like a plain `Cancel` is, never panic on a
+    /// missing runner.
+    #[tokio::test]
+    async fn cancel_subagent_with_no_turn_in_flight_is_a_harmless_no_op() {
+        let model = MockCompletionModel::from_stream_turns([vec![
+            MockStreamEvent::text("hi"),
+            MockStreamEvent::final_response_with_total_tokens(1),
+        ]]);
+        let agent = AgentBuilder::new(model).build();
+        let (_id, handle, _events) = spawn_session(agent);
+
+        handle
+            .send(SessionCmd::CancelSubagent(AgentId(7)))
+            .await
+            .unwrap();
 
         handle.send(SessionCmd::Shutdown).await.unwrap();
         let mut status = handle.status.clone();

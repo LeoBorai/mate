@@ -16,24 +16,37 @@
 //! existing double-press quit (`M7`) now shuts every open tab down on the way out, not just
 //! one — see [`run`].
 //!
-//! `Ctrl+B` toggles each tab's [`crate::panel::Panel`] (§9.7/§9.8, narrowed `M12`): its
-//! `network`/`documents` ring buffers are folded straight out of `AgentEvent::Activity` in
-//! [`App::on_session_event`], the one event kind routed regardless of which agent produced it
-//! — root or subagent, since the panel shows the whole session's tool activity (§9.3) even
-//! though the transcript itself stays root-only (§9.9).
+//! `Ctrl+B` toggles each tab's [`crate::panel::Panel`] plus the full `M12` [`AgentStatusPanel`](
+//! crate::panel_widgets::AgentStatusPanel) it feeds: `network`/`documents` ring buffers and the
+//! [`crate::roster::Roster`] are folded straight out of `AgentEvent::Activity`/`SubagentSpawned`/
+//! `SubagentFinished`/`Usage`/`ApprovalRequired` in [`App::on_session_event`] — every one of
+//! those is routed regardless of which agent produced it, root or subagent, since the panel
+//! shows the whole session's activity (§9.3) even though the transcript itself stays root-only
+//! (§9.9).
+//!
+//! `Ctrl+P` (`M12-9`) focuses the panel: `Tab`/`Shift+Tab` cycles which widget has focus,
+//! `↑`/`↓` moves the focused row of whichever list widget (subagents/network/documents) that
+//! is, `Enter` opens a read-only [`DetailModal`] for that row (or, on the context widget,
+//! toggles its root/subagent split), `x` cancels the focused subagent, and any printable key
+//! returns focus to the input and is inserted there — there is no code path that routes text
+//! into a subagent (§7.6).
 
 use std::path::PathBuf;
 
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use futures::StreamExt;
+use mate_core::cost::{ModelRate, estimate_cost};
 use mate_core::session::{SessionCmd, SessionEvent, SessionHandle, SessionId, SessionManager};
-use mate_core::streaming::AgentEvent;
+use mate_core::streaming::{AgentEvent, UsageRollup};
 use mate_tool_api::AgentId;
+use std::collections::HashMap;
 use tokio::sync::mpsc;
 use tokio::time::{Duration, Interval, MissedTickBehavior, interval};
 
 use crate::input::InputBox;
 use crate::panel::Panel;
+use crate::panel_widgets::{PanelFocus, PanelWidgetKind};
+use crate::roster::Roster;
 use crate::session_factory::{self, SessionDefaults};
 use crate::transcript::Transcript;
 use crate::ui::{self, AppView};
@@ -57,27 +70,41 @@ pub struct InitialSession {
     /// The session's workspace root — the documents log (§9.8) renders file paths relative to
     /// this rather than the absolute paths `ToolActivity::FileTouched` carries.
     pub root: PathBuf,
+    /// The `MODEL` widget's third line (§9.4) — `None` when delegation is off.
+    pub subagent_model: Option<String>,
+}
+
+/// A read-only detail popup (`M12-9`'s `Enter` on a focused panel row) — one flavor for
+/// whichever list widget was focused, built once at open time from that row's already-known
+/// fields. Never re-reads anything live (no re-fetch, no new tool call): the panel only ever
+/// shows what already streamed through, and this modal is no exception.
+pub(crate) struct DetailModal {
+    pub(crate) title: String,
+    pub(crate) lines: Vec<String>,
 }
 
 /// One tab's live state (`M8-2`). Everything that was a flat field on `App` before `M8` — the
 /// transcript, the wrap cache, the input draft, scroll position — moved here unchanged; the
-/// only things `App` still owns directly are the manager and which tab is active.
+/// only things `App` still owns directly are the manager, the pricing table, and which tab is
+/// active.
 struct SessionTab {
     id: SessionId,
     handle: SessionHandle,
     title: String,
     model: String,
     provider: String,
+    subagent_model: Option<String>,
     root: PathBuf,
     transcript: Transcript,
     wrap: WrapCache,
     input: InputBox,
     scroll: usize,
     running_turn: bool,
-    /// Cumulative prompt/completion tokens for the session, folded in off each
-    /// `AgentEvent::Usage` (one per completion call) — the bottom status bar's `↑`/`↓` values.
-    tokens_sent: u64,
-    tokens_received: u64,
+    /// Root + subagent usage, split, with the sparkline's bounded per-turn history (§9.5,
+    /// `M11-5`) — the source both the bottom status bar and the `CONTEXT` widget read from.
+    usage: UsageRollup,
+    /// `Enter` on the `CONTEXT` widget (§9.5) toggles this.
+    context_split: bool,
     /// Set when a background tab produces visible activity (`M8-4`); cleared on switching to it.
     unread: bool,
     /// Set when a background tab errors (`M8-4`); cleared on switching to it. Takes marker
@@ -86,9 +113,16 @@ struct SessionTab {
     /// Network/documents activity logs (§9.7/§9.8), folded from `AgentEvent::Activity` — one
     /// panel per tab, never shared across tabs (§9.1).
     panel: Panel,
+    /// The subagent roster (§9.6), folded from `SubagentSpawned`/`Finished`/`Activity`/`Usage`/
+    /// `ApprovalRequired` tagged with a non-root `AgentId`.
+    roster: Roster,
     /// `Ctrl+B` toggle, per tab so a spawn form's freshly-opened tab always starts visible
     /// regardless of what another tab's user preference is (§9.1: panel state is per-session).
     panel_visible: bool,
+    /// `Ctrl+P`/`Tab`/arrows (`M12-9`) — `None` when the panel doesn't have input focus.
+    panel_focus: Option<PanelFocus>,
+    /// `Enter` on a focused list row (`M12-9`) — read-only, closed by `Esc` or `Enter` again.
+    detail_modal: Option<DetailModal>,
 }
 
 impl SessionTab {
@@ -98,6 +132,7 @@ impl SessionTab {
         title: String,
         model: String,
         provider: String,
+        subagent_model: Option<String>,
         root: PathBuf,
     ) -> Self {
         Self {
@@ -106,18 +141,22 @@ impl SessionTab {
             title,
             model,
             provider,
+            subagent_model,
             root,
             transcript: Transcript::new(),
             wrap: WrapCache::new(),
             input: InputBox::new(),
             scroll: 0,
             running_turn: false,
-            tokens_sent: 0,
-            tokens_received: 0,
+            usage: UsageRollup::default(),
+            context_split: false,
             unread: false,
             needs_attention: false,
             panel: Panel::default(),
+            roster: Roster::default(),
             panel_visible: true,
+            panel_focus: None,
+            detail_modal: None,
         }
     }
 }
@@ -203,6 +242,9 @@ pub struct App {
     manager: SessionManager,
     events: mpsc::Receiver<SessionEvent>,
     defaults: SessionDefaults,
+    /// `[pricing]` (§9.5, `M11-6`), converted once from `mate-cli`'s TOML-facing config shape —
+    /// shared across every tab, the same table regardless of which session asks.
+    pricing: HashMap<String, ModelRate>,
     tabs: Vec<SessionTab>,
     active: usize,
     quit_armed: bool,
@@ -218,15 +260,27 @@ impl App {
         events: mpsc::Receiver<SessionEvent>,
         sessions: Vec<InitialSession>,
         defaults: SessionDefaults,
+        pricing: HashMap<String, ModelRate>,
     ) -> Self {
         let tabs = sessions
             .into_iter()
-            .map(|s| SessionTab::new(s.session_id, s.handle, s.title, s.model, s.provider, s.root))
+            .map(|s| {
+                SessionTab::new(
+                    s.session_id,
+                    s.handle,
+                    s.title,
+                    s.model,
+                    s.provider,
+                    s.subagent_model,
+                    s.root,
+                )
+            })
             .collect();
         Self {
             manager,
             events,
             defaults,
+            pricing,
             tabs,
             active: 0,
             quit_armed: false,
@@ -259,16 +313,28 @@ impl App {
             error: form.error.as_deref(),
         });
         let tab = &mut self.tabs[active];
+        let cost = estimate_cost(
+            &tab.usage,
+            &tab.model,
+            tab.subagent_model.as_deref().unwrap_or(&tab.model),
+            &self.pricing,
+        );
+        let detail_modal = tab.detail_modal.as_ref().map(|m| ui::DetailModalView {
+            title: &m.title,
+            lines: &m.lines,
+        });
         AppView {
             tabs,
             active,
             spawn_form,
+            detail_modal,
             session: ui::View {
                 transcript: &tab.transcript,
                 wrap: &mut tab.wrap,
                 input: &tab.input,
                 root: &tab.root,
                 panel_visible: tab.panel_visible,
+                subagents: tab.roster.rows(),
                 network: &tab.panel.network,
                 documents: &tab.panel.documents,
                 network_turn_requests: tab.panel.turn_requests,
@@ -276,8 +342,11 @@ impl App {
                 running_turn: tab.running_turn,
                 model: &tab.model,
                 provider: &tab.provider,
-                tokens_sent: tab.tokens_sent,
-                tokens_received: tab.tokens_received,
+                subagent_model: tab.subagent_model.as_deref(),
+                usage: &tab.usage,
+                cost,
+                context_split: tab.context_split,
+                panel_focus: tab.panel_focus,
                 quit_armed,
                 close_confirm,
             },
@@ -297,12 +366,51 @@ impl App {
         let is_active = idx == self.active;
         let tab = &mut self.tabs[idx];
 
-        if let AgentEvent::Activity(record) = event.event {
-            tab.panel.push(event.agent, record);
-            if !is_active {
-                tab.unread = true;
+        // Every event kind that isn't root-only (§9.9): the panel — network/documents logs and
+        // the subagent roster alike — shows the whole session's activity, root and subagents
+        // together (§9.3), even though the transcript stays root-only below. Each arm returns,
+        // same shape the original `Activity`-only special case had.
+        match &event.event {
+            AgentEvent::Activity(record) => {
+                if event.agent != AgentId::ROOT {
+                    tab.roster.note_activity(event.agent, record);
+                }
+                tab.panel.push(event.agent, record.clone());
+                if !is_active {
+                    tab.unread = true;
+                }
+                return;
             }
-            return;
+            AgentEvent::SubagentSpawned { id, label, .. } => {
+                tab.roster.spawn(*id, label.clone());
+                if !is_active {
+                    tab.unread = true;
+                }
+                return;
+            }
+            AgentEvent::SubagentFinished { id, outcome } => {
+                tab.roster.finish(*id, outcome);
+                if !is_active {
+                    tab.unread = true;
+                }
+                return;
+            }
+            AgentEvent::ApprovalRequired { .. } if event.agent != AgentId::ROOT => {
+                tab.roster.awaiting_approval(event.agent);
+                if !is_active {
+                    tab.needs_attention = true;
+                }
+                return;
+            }
+            AgentEvent::Usage(usage) if event.agent != AgentId::ROOT => {
+                tab.usage.record_subagent_turn(*usage);
+                tab.roster.record_turn(event.agent);
+                if !is_active {
+                    tab.unread = true;
+                }
+                return;
+            }
+            _ => {}
         }
 
         if event.agent != AgentId::ROOT {
@@ -341,15 +449,14 @@ impl App {
                 None
             }
             AgentEvent::Usage(usage) => {
-                tab.tokens_sent += usage.input_tokens;
-                tab.tokens_received += usage.output_tokens;
+                tab.usage.record_root_turn(usage);
                 None
             }
-            // No consumer yet in this transcript-only view: approvals land at `M13`, the
-            // subagent roster at full `M12`.
-            AgentEvent::ApprovalRequired { .. }
-            | AgentEvent::SubagentSpawned { .. }
-            | AgentEvent::SubagentFinished { .. } => None,
+            // The root agent's own approval request: no consumer until `M13`'s modal.
+            AgentEvent::ApprovalRequired { .. } => None,
+            // Always tagged with a non-root `AgentId` (`crate::subagent::drive_subagent`), so
+            // these never reach here — the arms above already returned. Kept for exhaustiveness.
+            AgentEvent::SubagentSpawned { .. } | AgentEvent::SubagentFinished { .. } => None,
             AgentEvent::Activity(_) => unreachable!("handled above, before the root-only gate"),
         };
         if activity && !is_active {
@@ -424,6 +531,11 @@ impl App {
             return;
         }
 
+        if ctrl && matches!(key.code, KeyCode::Char('p' | 'P')) {
+            self.toggle_panel_focus();
+            return;
+        }
+
         if ctrl && matches!(key.code, KeyCode::Left) {
             let len = self.tabs.len();
             self.switch_to((self.active + len - 1) % len);
@@ -444,6 +556,20 @@ impl App {
             return;
         }
 
+        // `M12-9`: the modal takes priority when open, then panel focus — a printable key with
+        // no panel-specific meaning clears focus and falls through to the input box below,
+        // rather than being swallowed, so the character the user typed still lands (§9.12).
+        if self.tabs[self.active].detail_modal.is_some() {
+            if matches!(key.code, KeyCode::Esc | KeyCode::Enter) {
+                self.tabs[self.active].detail_modal = None;
+            }
+            return;
+        }
+
+        if self.tabs[self.active].panel_focus.is_some() && self.handle_panel_key(key).await {
+            return;
+        }
+
         if let Some(prompt) = self.tabs[self.active].input.on_key(key) {
             // §5.2: one turn at a time — a prompt sent while another is in flight is dropped
             // by the session task anyway, so don't even send it, and keep the draft the user
@@ -461,6 +587,176 @@ impl App {
                     .await;
             }
         }
+    }
+
+    /// `Ctrl+P` (`M12-9`): focuses the panel on `ModelWidget` if nothing was focused, or
+    /// releases focus back to the input if something already was — a toggle, matching `Ctrl+B`
+    /// right above it. Focusing also makes sure the panel is actually visible; focusing a
+    /// hidden panel would be pointless.
+    fn toggle_panel_focus(&mut self) {
+        let tab = &mut self.tabs[self.active];
+        if tab.panel_focus.is_some() {
+            tab.panel_focus = None;
+        } else {
+            tab.panel_focus = Some(PanelFocus {
+                widget: PanelWidgetKind::Model,
+                row: 0,
+            });
+            tab.panel_visible = true;
+        }
+    }
+
+    /// Rows actually shown for a list widget right now — the same caps
+    /// `crate::panel_widgets` renders against — so `↑`/`↓` can't walk focus past what's on
+    /// screen.
+    fn panel_row_count(&self, idx: usize, widget: PanelWidgetKind) -> usize {
+        let tab = &self.tabs[idx];
+        match widget {
+            PanelWidgetKind::Subagents => tab.roster.len().min(crate::roster::ROSTER_SHOWN),
+            PanelWidgetKind::Network => tab.panel.network.len().min(6),
+            PanelWidgetKind::Documents => tab.panel.documents.len().min(6),
+            PanelWidgetKind::Model | PanelWidgetKind::Context => 0,
+        }
+    }
+
+    /// Handles one key while the active tab's panel has focus (`M12-9`). Returns `true` if the
+    /// key was consumed — `false` only for a plain printable character, which clears focus and
+    /// is left for the caller to hand to the input box instead, so the keystroke isn't lost.
+    async fn handle_panel_key(&mut self, key: KeyEvent) -> bool {
+        let idx = self.active;
+        let Some(focus) = self.tabs[idx].panel_focus else {
+            return false;
+        };
+
+        match key.code {
+            KeyCode::Esc => {
+                self.tabs[idx].panel_focus = None;
+                true
+            }
+            KeyCode::Tab => {
+                self.tabs[idx].panel_focus = Some(PanelFocus {
+                    widget: focus.widget.next(),
+                    row: 0,
+                });
+                true
+            }
+            KeyCode::BackTab => {
+                self.tabs[idx].panel_focus = Some(PanelFocus {
+                    widget: focus.widget.prev(),
+                    row: 0,
+                });
+                true
+            }
+            KeyCode::Up if focus.widget.is_list() => {
+                self.tabs[idx].panel_focus = Some(PanelFocus {
+                    widget: focus.widget,
+                    row: focus.row.saturating_sub(1),
+                });
+                true
+            }
+            KeyCode::Down if focus.widget.is_list() => {
+                let max = self.panel_row_count(idx, focus.widget).saturating_sub(1);
+                self.tabs[idx].panel_focus = Some(PanelFocus {
+                    widget: focus.widget,
+                    row: (focus.row + 1).min(max),
+                });
+                true
+            }
+            KeyCode::Enter => {
+                self.activate_panel_focus(idx, focus);
+                true
+            }
+            KeyCode::Char('x' | 'X') if focus.widget == PanelWidgetKind::Subagents => {
+                self.cancel_focused_subagent(idx, focus).await;
+                true
+            }
+            KeyCode::Char(_) => {
+                // §9.12: any other printable key returns focus to the input and is inserted
+                // there — never routed anywhere near a subagent (§7.6).
+                self.tabs[idx].panel_focus = None;
+                false
+            }
+            _ => true,
+        }
+    }
+
+    /// `Enter` on a focused panel row (`M12-9`): toggles the context widget's split, or opens a
+    /// read-only [`DetailModal`] built from that row's already-known fields — never a live
+    /// re-fetch.
+    fn activate_panel_focus(&mut self, idx: usize, focus: PanelFocus) {
+        match focus.widget {
+            PanelWidgetKind::Model => {}
+            PanelWidgetKind::Context => {
+                let split = &mut self.tabs[idx].context_split;
+                *split = !*split;
+            }
+            PanelWidgetKind::Subagents => {
+                let Some(row) = self.tabs[idx].roster.rows().get(focus.row) else {
+                    return;
+                };
+                let elapsed = row.started.elapsed().as_secs();
+                self.tabs[idx].detail_modal = Some(DetailModal {
+                    title: format!("subagent · {}", row.label),
+                    lines: vec![
+                        format!("status: {:?}", row.status),
+                        format!("elapsed: {}:{:02}", elapsed / 60, elapsed % 60),
+                        format!("turns: {}", row.turns),
+                        format!("activity: {}", row.activity),
+                    ],
+                });
+            }
+            PanelWidgetKind::Network => {
+                let Some(row) = self.tabs[idx].panel.network.get(focus.row) else {
+                    return;
+                };
+                let mut lines = vec![format!("host: {}", row.host), format!("path: {}", row.path)];
+                match &row.reason {
+                    Some(reason) => lines.push(format!("blocked: {reason}")),
+                    None => {
+                        let status = row
+                            .status
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| "—".to_string());
+                        lines.push(format!("status: {status}"));
+                        lines.push(format!("duration: {}ms", row.ms));
+                    }
+                }
+                self.tabs[idx].detail_modal = Some(DetailModal {
+                    title: "request".to_string(),
+                    lines,
+                });
+            }
+            PanelWidgetKind::Documents => {
+                let Some(row) = self.tabs[idx].panel.documents.get(focus.row) else {
+                    return;
+                };
+                self.tabs[idx].detail_modal = Some(DetailModal {
+                    title: "document".to_string(),
+                    lines: vec![
+                        format!("path: {}", row.path.display()),
+                        format!("op: {:?}", row.op),
+                        format!("lines: {}", row.lines),
+                    ],
+                });
+            }
+        }
+    }
+
+    /// `x` on a focused subagent row (`M12-9`): routed through `SessionCmd::CancelSubagent`,
+    /// never `Cancel` — this must stop only that one subagent, not the root turn.
+    async fn cancel_focused_subagent(&mut self, idx: usize, focus: PanelFocus) {
+        let Some(id) = self.tabs[idx]
+            .roster
+            .rows()
+            .get(focus.row)
+            .map(|row| row.id)
+        else {
+            return;
+        };
+        let _ = self.tabs[idx]
+            .handle
+            .send(SessionCmd::CancelSubagent(id))
+            .await;
     }
 
     async fn handle_spawn_form_key(&mut self, key: KeyEvent) {
@@ -531,12 +827,14 @@ impl App {
         match self.manager.spawn(&spec, ctx) {
             Ok(handle) => {
                 let provider = defaults.provider_label();
+                let subagent_model = defaults.subagent_model_label();
                 self.tabs.push(SessionTab::new(
                     handle.id,
                     handle,
                     title,
                     defaults.model.clone(),
                     provider,
+                    subagent_model,
                     root,
                 ));
                 let new_idx = self.tabs.len() - 1;
@@ -617,12 +915,13 @@ pub async fn run(
     events: mpsc::Receiver<SessionEvent>,
     sessions: Vec<InitialSession>,
     defaults: SessionDefaults,
+    pricing: HashMap<String, ModelRate>,
 ) -> Result<(), TuiError> {
     if sessions.is_empty() {
         return Ok(());
     }
     let mut terminal = ratatui::try_init()?;
-    let mut app = App::new(manager, events, sessions, defaults);
+    let mut app = App::new(manager, events, sessions, defaults, pricing);
     let result = run_loop(&mut app, &mut terminal).await;
     ratatui::restore();
     for tab in &app.tabs {
@@ -678,9 +977,11 @@ mod tests {
 
     use mate_core::backend::Backend;
     use mate_core::config::{AgentSpec, DelegationPolicy, HttpPolicy, SessionSpec};
-    use mate_tool_api::ToolCtx;
+    use mate_tool_api::{SubagentOutcome, ToolCtx};
     use mate_tool_http::HttpShared;
     use tokio_util::sync::CancellationToken;
+
+    use crate::roster::SubagentStatus;
 
     use super::*;
 
@@ -748,9 +1049,10 @@ mod tests {
                 model: "org/model".to_string(),
                 provider: "huggingface".to_string(),
                 root: PathBuf::from("."),
+                subagent_model: None,
             });
         }
-        App::new(manager, events_rx, sessions, defaults())
+        App::new(manager, events_rx, sessions, defaults(), HashMap::new())
     }
 
     #[tokio::test]
@@ -951,5 +1253,192 @@ mod tests {
 
         assert!(app.tabs[1].unread);
         assert_eq!(app.tabs[1].panel.network.len(), 1);
+    }
+
+    // --- `M12-6`/`M12-9`: the subagent roster and panel navigation --------------------------
+
+    #[tokio::test]
+    async fn subagent_spawned_and_finished_route_into_the_roster_not_the_transcript() {
+        let mut app = test_app(1);
+        let session = app.tabs[0].id;
+
+        app.on_session_event(SessionEvent {
+            session,
+            agent: AgentId(1),
+            event: AgentEvent::SubagentSpawned {
+                id: AgentId(1),
+                label: "deps".to_string(),
+                task: "find deps".to_string(),
+            },
+        });
+        assert_eq!(app.tabs[0].roster.len(), 1);
+        assert!(
+            app.tabs[0].transcript.is_empty(),
+            "a subagent's own lifecycle events must never inline into the root transcript (§9.9)"
+        );
+
+        app.on_session_event(SessionEvent {
+            session,
+            agent: AgentId(1),
+            event: AgentEvent::SubagentFinished {
+                id: AgentId(1),
+                outcome: SubagentOutcome::Completed {
+                    summary: "done".to_string(),
+                },
+            },
+        });
+        assert_eq!(app.tabs[0].roster.rows()[0].status, SubagentStatus::Done);
+    }
+
+    #[tokio::test]
+    async fn a_subagent_tagged_usage_event_updates_the_subagent_side_not_root() {
+        let mut app = test_app(1);
+        let session = app.tabs[0].id;
+        app.on_session_event(SessionEvent {
+            session,
+            agent: AgentId(1),
+            event: AgentEvent::SubagentSpawned {
+                id: AgentId(1),
+                label: "deps".to_string(),
+                task: "t".to_string(),
+            },
+        });
+
+        app.on_session_event(SessionEvent {
+            session,
+            agent: AgentId(1),
+            event: AgentEvent::Usage(rig::completion::Usage {
+                input_tokens: 40,
+                output_tokens: 8,
+                total_tokens: 48,
+                cached_input_tokens: 0,
+                cache_creation_input_tokens: 0,
+                tool_use_prompt_tokens: 0,
+                reasoning_tokens: 0,
+            }),
+        });
+
+        assert_eq!(app.tabs[0].usage.subagents.input_tokens, 40);
+        assert_eq!(app.tabs[0].usage.root.input_tokens, 0);
+        assert_eq!(
+            app.tabs[0].roster.rows()[0].turns,
+            1,
+            "a completion-call Usage event must count as one of this subagent's turns"
+        );
+    }
+
+    #[tokio::test]
+    async fn ctrl_p_opens_panel_focus_on_model_and_makes_the_panel_visible() {
+        let mut app = test_app(1);
+        app.tabs[0].panel_visible = false;
+
+        app.on_key(ctrl_key('p')).await;
+
+        assert_eq!(
+            app.tabs[0].panel_focus,
+            Some(PanelFocus {
+                widget: PanelWidgetKind::Model,
+                row: 0
+            })
+        );
+        assert!(app.tabs[0].panel_visible);
+
+        app.on_key(ctrl_key('p')).await;
+        assert_eq!(
+            app.tabs[0].panel_focus, None,
+            "a second Ctrl+P releases focus"
+        );
+    }
+
+    #[tokio::test]
+    async fn tab_while_focused_cycles_through_every_widget_and_back_to_model() {
+        let mut app = test_app(1);
+        app.on_key(ctrl_key('p')).await;
+
+        let tab_key = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
+        for _ in 0..5 {
+            app.on_key(tab_key).await;
+        }
+
+        assert_eq!(
+            app.tabs[0].panel_focus.unwrap().widget,
+            PanelWidgetKind::Model,
+            "five Tabs from Model must cycle through all five widgets and land back on Model"
+        );
+    }
+
+    #[tokio::test]
+    async fn enter_on_the_context_widget_toggles_the_split() {
+        let mut app = test_app(1);
+        app.tabs[0].panel_focus = Some(PanelFocus {
+            widget: PanelWidgetKind::Context,
+            row: 0,
+        });
+        assert!(!app.tabs[0].context_split);
+
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+
+        assert!(app.tabs[0].context_split);
+    }
+
+    #[tokio::test]
+    async fn enter_on_a_focused_subagent_row_opens_a_read_only_detail_modal() {
+        let mut app = test_app(1);
+        let session = app.tabs[0].id;
+        app.on_session_event(SessionEvent {
+            session,
+            agent: AgentId(1),
+            event: AgentEvent::SubagentSpawned {
+                id: AgentId(1),
+                label: "deps".to_string(),
+                task: "t".to_string(),
+            },
+        });
+        app.tabs[0].panel_focus = Some(PanelFocus {
+            widget: PanelWidgetKind::Subagents,
+            row: 0,
+        });
+
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+
+        assert!(app.tabs[0].detail_modal.is_some());
+        let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        app.on_key(esc).await;
+        assert!(
+            app.tabs[0].detail_modal.is_none(),
+            "Esc must close the modal"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_printable_key_while_focused_clears_focus_and_still_reaches_the_input() {
+        let mut app = test_app(1);
+        app.on_key(ctrl_key('p')).await;
+        assert!(app.tabs[0].panel_focus.is_some());
+
+        app.on_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE))
+            .await;
+
+        assert_eq!(
+            app.tabs[0].panel_focus, None,
+            "a printable key must return focus to the input"
+        );
+        assert_eq!(app.tabs[0].input.textarea().lines()[0], "h");
+    }
+
+    #[tokio::test]
+    async fn x_on_an_empty_roster_is_a_harmless_no_op() {
+        let mut app = test_app(1);
+        app.tabs[0].panel_focus = Some(PanelFocus {
+            widget: PanelWidgetKind::Subagents,
+            row: 0,
+        });
+
+        app.on_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE))
+            .await;
+
+        assert!(app.tabs[0].detail_modal.is_none());
     }
 }

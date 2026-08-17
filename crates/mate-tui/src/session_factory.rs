@@ -39,6 +39,15 @@ impl SessionDefaults {
             .clone()
             .unwrap_or_else(|| "huggingface".to_string())
     }
+
+    /// The subagent model the status panel's `MODEL` widget shows on its third line (§9.4) —
+    /// `None` when delegation is off, since there's then no subagent model in play to show.
+    pub fn subagent_model_label(&self) -> Option<String> {
+        if !self.delegation.enabled {
+            return None;
+        }
+        self.delegation.subagent_model.clone()
+    }
 }
 
 /// Assembles one session's spec (§4, §5.1) from `defaults` plus the per-tab `root` and `title`.
@@ -126,6 +135,22 @@ mod tests {
         let mut d = defaults();
         d.sub_provider = Some("together".to_string());
         assert_eq!(d.provider_label(), "together");
+    }
+
+    #[test]
+    fn subagent_model_label_is_none_when_delegation_is_disabled() {
+        let mut d = defaults();
+        d.delegation.enabled = false;
+        d.delegation.subagent_model = Some("org/sub-model".to_string());
+        assert_eq!(d.subagent_model_label(), None);
+    }
+
+    #[test]
+    fn subagent_model_label_carries_the_configured_model_when_delegation_is_on() {
+        let mut d = defaults();
+        d.delegation.enabled = true;
+        d.delegation.subagent_model = Some("org/sub-model".to_string());
+        assert_eq!(d.subagent_model_label(), Some("org/sub-model".to_string()));
     }
 
     #[test]

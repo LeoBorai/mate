@@ -1,13 +1,17 @@
 //! The Ratatui frontend: a tab bar over one session per tab (`M8`), each with its own scrolling
 //! transcript, `ratatui-textarea` input box (`Enter`/`Alt+Enter` routing, `M7-5`), a bottom
-//! status bar showing that tab's provider, model, and token counts, and a toggleable side panel
-//! (`Ctrl+B`) of that tab's network and documents logs (narrowed `M12`, §9.7/§9.8). `Ctrl+T`
-//! opens a new tab via [`build_spec`]; `Ctrl+W` closes the active one.
+//! status bar showing that tab's provider, model, tokens, and cost, and a toggleable agent
+//! status panel (`Ctrl+B`, `M12`) — model, context/cost, subagent roster, network log, and
+//! documents log, with its own vertical-budget allocation and `Ctrl+P` row-level navigation
+//! (§9). `Ctrl+T` opens a new tab via [`build_spec`]; `Ctrl+W` closes the active one.
 
 mod app;
 mod input;
 mod panel;
+mod panel_widgets;
+mod roster;
 mod session_factory;
+mod text;
 mod transcript;
 mod ui;
 mod wrap;
