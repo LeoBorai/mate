@@ -103,12 +103,23 @@ pub(crate) struct DetailModalView<'a> {
     pub(crate) lines: &'a [String],
 }
 
+/// One pending approval request, rendered for the active tab only (`M13-2`) — see
+/// `crate::app::PendingApproval` for how it's built and `crate::app::App::handle_approval_key`
+/// for the `y`/`n`/`Esc` decision this modal captures.
+pub(crate) struct ApprovalModalView<'a> {
+    pub(crate) agent_label: &'a str,
+    pub(crate) name: &'a str,
+    pub(crate) detail: &'a str,
+    pub(crate) queued: usize,
+}
+
 pub(crate) struct AppView<'a> {
     pub(crate) tabs: Vec<TabSummary>,
     pub(crate) active: usize,
     pub(crate) session: View<'a>,
     pub(crate) spawn_form: Option<SpawnFormView<'a>>,
     pub(crate) detail_modal: Option<DetailModalView<'a>>,
+    pub(crate) approval_modal: Option<ApprovalModalView<'a>>,
 }
 
 pub(crate) fn draw(f: &mut Frame<'_>, view: &mut AppView<'_>) {
@@ -141,6 +152,11 @@ pub(crate) fn draw(f: &mut Frame<'_>, view: &mut AppView<'_>) {
     if let Some(modal) = &view.detail_modal {
         render_detail_modal(f, area, modal);
     }
+    // §7.4/`M13-2`: renders only for the active tab, over whatever else is already drawn —
+    // takes priority over the detail modal, same as `App::on_key`'s handling order.
+    if let Some(modal) = &view.approval_modal {
+        render_approval_modal(f, area, modal);
+    }
 }
 
 /// `Enter` on a focused panel row (`M12-9`): a small centered read-only popup, same shape as
@@ -158,6 +174,44 @@ fn render_detail_modal(f: &mut Frame<'_>, area: Rect, modal: &DetailModalView<'_
     f.render_widget(block, popup);
 
     let lines: Vec<Line<'static>> = modal.lines.iter().map(|l| Line::from(l.clone())).collect();
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
+/// `M13-2`'s approval modal: a binary, no-free-text decision (§7.4) — `y` grants, `n`/`Esc`
+/// denies. Same popup shape as [`render_spawn_form`]/[`render_detail_modal`], styled with a
+/// yellow border so it reads as "needs a decision" rather than just another info popup.
+fn render_approval_modal(f: &mut Frame<'_>, area: Rect, modal: &ApprovalModalView<'_>) {
+    let width = area.width.saturating_sub(4).clamp(30, 64);
+    let height = 6;
+    let popup = centered_rect(width, height, area);
+
+    f.render_widget(Clear, popup);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow))
+        .title(format!(
+            " approval requested — {} wants to run ",
+            modal.agent_label
+        ));
+    let inner = block.inner(popup);
+    f.render_widget(block, popup);
+
+    let mut lines = vec![
+        Line::from(Span::styled(
+            modal.name.to_string(),
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from(modal.detail.to_string()),
+        Line::from(""),
+    ];
+    if modal.queued > 0 {
+        lines.push(Line::from(format!(
+            "({} more approval{} waiting)",
+            modal.queued,
+            if modal.queued == 1 { "" } else { "s" }
+        )));
+    }
+    lines.push(Line::from("y grant · n/Esc deny"));
     f.render_widget(Paragraph::new(lines), inner);
 }
 
@@ -563,7 +617,8 @@ fn render_text(entry: &Entry) -> String {
     match entry {
         Entry::User { text, .. }
         | Entry::Assistant { text, .. }
-        | Entry::SystemError { text, .. } => text.clone(),
+        | Entry::SystemError { text, .. }
+        | Entry::System { text, .. } => text.clone(),
         Entry::ToolCall {
             name,
             ok,
@@ -600,6 +655,7 @@ fn styled_line(entry: &Entry, raw: &str, first: bool) -> Line<'static> {
                 .add_modifier(Modifier::ITALIC),
         ),
         Entry::SystemError { .. } => ("!", Style::default().fg(Color::Red)),
+        Entry::System { .. } => ("*", Style::default().fg(Color::Yellow)),
     };
     let prefix = if first {
         format!("{label:<width$}", width = PREFIX_WIDTH as usize)

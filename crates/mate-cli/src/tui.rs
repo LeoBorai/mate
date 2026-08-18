@@ -68,6 +68,8 @@ pub async fn run(cli: &crate::cli::Cli, config: &Config) -> Result<(), MateError
             provider: provider.clone(),
             root: root.clone(),
             subagent_model: subagent_model.clone(),
+            http_enabled: defaults.http.enabled,
+            may_delegate: defaults.delegation.enabled,
         });
     }
 

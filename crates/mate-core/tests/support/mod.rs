@@ -23,6 +23,7 @@ pub fn tool_ctx(root: PathBuf) -> ToolCtx {
         spawner: None,
         activity,
         cancel: CancellationToken::new(),
+        approvals: None,
     }
 }
 

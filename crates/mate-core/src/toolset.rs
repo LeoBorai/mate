@@ -121,6 +121,7 @@ mod tests {
             spawner: None,
             activity,
             cancel: CancellationToken::new(),
+            approvals: None,
         }
     }
 

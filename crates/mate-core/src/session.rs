@@ -42,6 +42,14 @@
 //! agent and every subagent [`crate::subagent::SubagentRunner`] spawns, and [`drain_activity`]
 //! folds whatever arrives on it into an [`AgentEvent::Activity`] on this session's own
 //! [`SessionEvent`] stream — the same channel every other event already rides.
+//!
+//! `M13-1`'s approval channel is wired the same way: [`SessionManager::spawn`] builds one
+//! [`crate::approval::SessionApprovalHub`] per session and overwrites `ctx.approvals` with it,
+//! shared by the root agent and every subagent for the same "one channel per session, never per
+//! agent" reason §7.4 gives — two subagents requesting approval at once must queue as two
+//! independent pending entries, not deadlock behind each other. `M13-4`'s context compaction
+//! lives in [`crate::compact`] and is driven from [`session_task`], right after each prompt
+//! completes.
 
 use std::sync::Arc;
 
@@ -56,6 +64,7 @@ use tokio_util::sync::CancellationToken;
 use ulid::Ulid;
 
 use crate::agent::{BuiltAgent, build_agent};
+use crate::approval::SessionApprovalHub;
 use crate::backend::Backend;
 use crate::config::SessionSpec;
 use crate::streaming::{self, AgentEvent, AgentEventEnvelope};
@@ -88,9 +97,10 @@ pub enum SessionStatus {
     Closed,
 }
 
-/// One command a session's task consumes (§5.1). `Approve` has no producer until `M13`'s
-/// approval flow exists — the session task accepts and no-ops it now for the same reason
-/// `AgentEvent::ApprovalRequired` already exists ahead of its producer.
+/// One command a session's task consumes (§5.1). `Approve { id, granted }` resolves the
+/// pending request `id` names on this session's `crate::approval::SessionApprovalHub` — both
+/// `session_task` (idle) and `run_prompt`'s `select!` (mid-turn) route it there, since an
+/// approval can be requested by a tool call at either point.
 #[derive(Debug, Clone)]
 pub enum SessionCmd {
     Prompt(String),
@@ -235,6 +245,13 @@ impl SessionManager {
         let (activity_tx, activity_rx) = mpsc::channel(ACTIVITY_CHANNEL_CAPACITY);
         ctx.activity = activity_tx.clone();
 
+        // `M13-1`: one approval hub per session, shared by the root agent and every subagent's
+        // `ToolCtx` the same way `activity_tx` already is — see this module's doc comment for
+        // `ctx.cancel`/`ctx.activity`, and `crate::approval`'s own doc comment for why one hub
+        // per session (never per agent) is what keeps two concurrent requests from deadlocking.
+        let approvals = Arc::new(SessionApprovalHub::new(id, events_tx.clone()));
+        ctx.approvals = Some(approvals.clone() as Arc<dyn mate_tool_api::Approvals>);
+
         let subagents = if spec.agent.may_delegate {
             let runner = Arc::new(SubagentRunner::new(
                 self.backend.clone(),
@@ -242,6 +259,7 @@ impl SessionManager {
                 id,
                 events_tx.clone(),
                 activity_tx,
+                approvals.clone() as Arc<dyn mate_tool_api::Approvals>,
                 ctx.root.clone(),
                 ctx.max_output_bytes,
                 &spec.agent,
@@ -265,6 +283,7 @@ impl SessionManager {
                 status_tx,
                 session_cancel,
                 subagents,
+                approvals,
             ),
             BuiltAgent::OpenAiCompatible(agent) => spawn_supervised(
                 id,
@@ -274,6 +293,7 @@ impl SessionManager {
                 status_tx,
                 session_cancel,
                 subagents,
+                approvals,
             ),
         }
 
@@ -306,6 +326,7 @@ fn spawn_supervised<M>(
     status_tx: watch::Sender<SessionStatus>,
     session_cancel: CancellationToken,
     subagents: Option<Arc<SubagentRunner>>,
+    approvals: Arc<SessionApprovalHub>,
 ) where
     M: CompletionModel + 'static,
     M::StreamingResponse: GetTokenUsage,
@@ -320,6 +341,7 @@ fn spawn_supervised<M>(
             status_tx,
             session_cancel,
             subagents,
+            approvals,
         ))
         .await;
         if result.is_err() {
@@ -345,6 +367,7 @@ async fn session_task<M>(
     status_tx: watch::Sender<SessionStatus>,
     session_cancel: CancellationToken,
     subagents: Option<Arc<SubagentRunner>>,
+    approvals: Arc<SessionApprovalHub>,
 ) where
     M: CompletionModel + 'static,
     M::StreamingResponse: GetTokenUsage,
@@ -357,7 +380,7 @@ async fn session_task<M>(
                 if let Some(runner) = &subagents {
                     runner.reset_turn();
                 }
-                let shutdown = run_prompt(
+                let (shutdown, usage) = run_prompt(
                     id,
                     &agent,
                     prompt,
@@ -367,8 +390,16 @@ async fn session_task<M>(
                     &events_tx,
                     &status_tx,
                     subagents.as_ref(),
+                    &approvals,
                 )
                 .await;
+                if !shutdown {
+                    // `M13-4`: best-effort — a compaction that fails to summarize (cancelled,
+                    // provider error, empty result) just leaves `history` untouched rather than
+                    // risking a corrupted conversation.
+                    crate::compact::maybe_compact(&agent, &mut history, usage, &session_cancel)
+                        .await;
+                }
                 if shutdown {
                     break;
                 }
@@ -377,8 +408,9 @@ async fn session_task<M>(
             SessionCmd::Cancel => {}
             // Same reasoning as `Cancel` above — no subagent can be running outside a turn.
             SessionCmd::CancelSubagent(_) => {}
-            // No approval flow exists until `M13`.
-            SessionCmd::Approve { .. } => {}
+            SessionCmd::Approve { id, granted } => {
+                approvals.resolve(id, granted);
+            }
             SessionCmd::Shutdown => {
                 session_cancel.cancel();
                 break;
@@ -404,7 +436,8 @@ async fn run_prompt<M>(
     events_tx: &mpsc::Sender<SessionEvent>,
     status_tx: &watch::Sender<SessionStatus>,
     subagents: Option<&Arc<SubagentRunner>>,
-) -> bool
+    approvals: &SessionApprovalHub,
+) -> (bool, rig::completion::Usage)
 where
     M: CompletionModel + 'static,
     M::StreamingResponse: GetTokenUsage,
@@ -438,7 +471,9 @@ where
                     shutdown = true;
                     session_cancel.cancel();
                 }
-                Some(SessionCmd::Approve { .. }) => {}
+                Some(SessionCmd::Approve { id, granted }) => {
+                    approvals.resolve(id, granted);
+                }
                 // One turn at a time (§5.2's model): a prompt sent while another is still
                 // running is dropped rather than queued or interleaved.
                 Some(SessionCmd::Prompt(_)) => {}
@@ -455,7 +490,7 @@ where
         history.push(Message::assistant(outcome.text));
     }
     let _ = status_tx.send(SessionStatus::Idle);
-    shutdown
+    (shutdown, outcome.usage)
 }
 
 /// Forwards one turn's event onto the shared channel (`M6-3`), tagging it with `session`.
@@ -610,6 +645,7 @@ mod tests {
         let (events_tx, events_rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
         let mut sessions: SlotMap<SessionId, ()> = SlotMap::with_key();
         let id = sessions.insert(());
+        let approvals = Arc::new(SessionApprovalHub::new(id, events_tx.clone()));
         tokio::spawn(session_task(
             id,
             agent,
@@ -618,6 +654,7 @@ mod tests {
             status_tx,
             CancellationToken::new(),
             None,
+            approvals,
         ));
         (
             id,
@@ -708,6 +745,7 @@ mod tests {
         let (events_tx, mut events_rx) = mpsc::channel::<SessionEvent>(2);
         let mut sessions: SlotMap<SessionId, ()> = SlotMap::with_key();
         let id = sessions.insert(());
+        let approvals = Arc::new(SessionApprovalHub::new(id, events_tx.clone()));
         let task = tokio::spawn(session_task(
             id,
             agent,
@@ -716,6 +754,7 @@ mod tests {
             status_tx,
             CancellationToken::new(),
             None,
+            approvals,
         ));
 
         cmds_tx.send(SessionCmd::Prompt("go".into())).await.unwrap();
@@ -792,6 +831,7 @@ mod tests {
         let (events_tx_a, _events_rx_a) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
         let mut sessions: SlotMap<SessionId, ()> = SlotMap::with_key();
         let id_a = sessions.insert(());
+        let approvals_a = Arc::new(SessionApprovalHub::new(id_a, events_tx_a.clone()));
         spawn_supervised(
             id_a,
             panicking_agent,
@@ -800,6 +840,7 @@ mod tests {
             status_tx_a,
             CancellationToken::new(),
             None,
+            approvals_a,
         );
         cmds_tx_a
             .send(SessionCmd::Prompt("break".into()))
@@ -874,6 +915,7 @@ mod tests {
             spawner: None,
             activity: tokio::sync::mpsc::channel(1).0,
             cancel: CancellationToken::new(),
+            approvals: None,
         };
 
         assert!(manager.spawn(&spec, ctx.clone()).is_ok());
@@ -916,6 +958,7 @@ mod tests {
             spawner: None,
             activity: tokio::sync::mpsc::channel(1).0,
             cancel: CancellationToken::new(),
+            approvals: None,
         };
 
         let handle = manager.spawn(&spec, ctx.clone()).unwrap();
@@ -969,6 +1012,7 @@ mod tests {
             spawner: None,
             activity: tokio::sync::mpsc::channel(1).0,
             cancel: CancellationToken::new(),
+            approvals: None,
         };
 
         let handle = manager.spawn(&spec, ctx);

@@ -5,6 +5,7 @@
 mod cli;
 mod config;
 mod error;
+mod firstrun;
 mod logging;
 mod plain;
 mod tui;
@@ -37,6 +38,12 @@ async fn run() -> Result<(), MateError> {
     let config = config::load(&args).map_err(MateError::Config)?;
     tracing::debug!(model = %config.model, has_api_token = config::api_token().is_some(), "config loaded");
     tracing::info!("mate started");
+
+    // `M13-5`: before anything below can touch the network or the workspace, print the
+    // one-time notice that it will. Printed to stderr, before the TUI ever touches the
+    // terminal (`ratatui::try_init` runs inside `tui::run`), so it neither corrupts `--plain`/
+    // `--print` output on stdout nor gets swallowed by the alternate screen.
+    firstrun::show_once();
 
     let stdout_is_tty = std::io::stdout().is_terminal();
     if plain::wants_plain(&args, stdout_is_tty) {

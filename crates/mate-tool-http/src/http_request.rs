@@ -3,9 +3,11 @@
 //! rendering into the one `Tool` impl the agent actually calls.
 //!
 //! **Method gating (`M10-7`).** Only `GET`/`HEAD` run unattended; everything else is refused
-//! outright. §8.2 describes routing mutating methods through approval instead, but no
-//! approval channel exists yet (`ToolCtx::approvals` is deferred to `M13` — see that type's
-//! doc comment) — so for now "no approval channel" and "always refuse" are the same thing.
+//! outright. §8.2 describes routing mutating methods through approval instead — `ToolCtx::
+//! approvals` exists as of `M13-1`, but this tool doesn't call it: `HttpRequestArgs` has no
+//! request-body field, so there is no mutating request to approve yet either. Wiring `POST`/
+//! `PUT`/etc. through approval is future work alongside adding a body — refusing outright stays
+//! the correct behavior for the surface this tool actually has today.
 //!
 //! **The manual redirect loop (`M10-3`).** `HttpShared::pinned_client` is built with
 //! `redirect::Policy::none()` specifically so this loop can re-run the *whole* validation
@@ -255,8 +257,7 @@ fn parse_method(method: Option<&str>) -> Result<reqwest::Method, ToolFailure> {
         "GET" => Ok(reqwest::Method::GET),
         "HEAD" => Ok(reqwest::Method::HEAD),
         other => Err(ToolFailure::Denied(format!(
-            "method not permitted: {other} (only GET and HEAD run without an approval flow, \
-             which does not exist yet)"
+            "method not permitted: {other} (only GET and HEAD are supported by this tool)"
         ))),
     }
 }
@@ -296,6 +297,7 @@ mod tests {
             spawner: None,
             activity,
             cancel: tokio_util::sync::CancellationToken::new(),
+            approvals: None,
         };
         let shared = Arc::new(HttpShared::new(60).unwrap());
         let tool = HttpRequest::new(ctx, shared, false);

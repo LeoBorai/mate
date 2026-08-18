@@ -4,7 +4,9 @@
 //! `SessionEvent` stream that both the transcript and the side panel read from.
 
 pub mod agent;
+pub mod approval;
 pub mod backend;
+mod compact;
 pub mod config;
 pub mod cost;
 pub mod preamble;

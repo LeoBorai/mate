@@ -30,6 +30,14 @@ pub enum Entry {
         id: EntryId,
         text: String,
     },
+    /// Local command feedback (`M13-3`'s slash commands) — the info-level counterpart to
+    /// `SystemError`: an unknown command, a `/tokens` summary, a `/rename` confirmation. Never
+    /// sent to the model; distinct from `SystemError` so the UI doesn't paint a `/model` reply
+    /// the same alarming red as a real failure.
+    System {
+        id: EntryId,
+        text: String,
+    },
 }
 
 impl Entry {
@@ -38,7 +46,8 @@ impl Entry {
             Entry::User { id, .. }
             | Entry::Assistant { id, .. }
             | Entry::ToolCall { id, .. }
-            | Entry::SystemError { id, .. } => *id,
+            | Entry::SystemError { id, .. }
+            | Entry::System { id, .. } => *id,
         }
     }
 }
@@ -154,6 +163,14 @@ impl Transcript {
     pub fn push_error(&mut self, text: String) -> Option<EntryId> {
         self.open_assistant = None;
         self.push(|id| Entry::SystemError { id, text })
+    }
+
+    /// A slash command's own feedback (`M13-3`) — usage errors, `/tokens`/`/model` output, an
+    /// unknown-command notice. Closes the open assistant entry the same way `push_error` does:
+    /// a command is always typed as a fresh line, never a continuation of streamed text.
+    pub fn push_system(&mut self, text: String) -> Option<EntryId> {
+        self.open_assistant = None;
+        self.push(|id| Entry::System { id, text })
     }
 
     pub fn end_turn(&mut self) {
@@ -275,6 +292,24 @@ mod tests {
         let evicted = t.push_user("overflow".to_string());
         assert_eq!(evicted, Some(0));
         assert_eq!(t.iter().count(), MAX_ENTRIES);
+    }
+
+    #[test]
+    fn push_system_closes_the_open_assistant_entry_like_push_error_does() {
+        let mut t = Transcript::new();
+        t.push_token("partial");
+        t.push_system("unknown command: /xyz".to_string());
+        t.push_token("more");
+
+        let entries: Vec<&Entry> = t.iter().collect();
+        assert_eq!(
+            entries.len(),
+            3,
+            "a system entry must never merge into the streaming assistant text around it"
+        );
+        assert!(
+            matches!(entries[1], Entry::System { text, .. } if text == "unknown command: /xyz")
+        );
     }
 
     #[test]

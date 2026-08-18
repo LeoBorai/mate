@@ -14,8 +14,10 @@ use anyhow::Context;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::EnvFilter;
 
-/// `$XDG_STATE_HOME/mate` or `~/.local/state/mate`.
-fn state_dir() -> anyhow::Result<PathBuf> {
+/// `$XDG_STATE_HOME/mate` or `~/.local/state/mate`. `pub(crate)` so `crate::firstrun` (`M13-5`)
+/// can put its one-time marker file alongside `mate.log` rather than inventing a second
+/// state-directory resolver.
+pub(crate) fn state_dir() -> anyhow::Result<PathBuf> {
     if let Ok(xdg) = std::env::var("XDG_STATE_HOME") {
         return Ok(PathBuf::from(xdg).join("mate"));
     }

@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
 
-use crate::{ActivitySink, AgentId, SubagentSpawner, ToolFailure};
+use crate::{ActivitySink, AgentId, Approvals, SubagentSpawner, ToolFailure};
 
 /// Everything a tool needs at construction time, captured by value into the tool struct
 /// (§8.1 note 2: `call(&self, args)` takes no context parameter, so root, caps, spawner,
@@ -16,8 +16,6 @@ use crate::{ActivitySink, AgentId, SubagentSpawner, ToolFailure};
 ///
 /// `session: SessionId` isn't here yet — `SessionId` has no producer until `M6`'s session
 /// manager, the same reasoning `mate-core::streaming::AgentEventEnvelope` already applied.
-/// `approvals: Option<ApprovalChannel>` is deferred to `M13`, once an approval flow exists
-/// to define its shape.
 #[derive(Clone)]
 pub struct ToolCtx {
     /// Which agent is calling — for activity/event attribution.
@@ -29,6 +27,11 @@ pub struct ToolCtx {
     pub activity: ActivitySink,
     /// This agent's cancellation token, child of the session's.
     pub cancel: CancellationToken,
+    /// The session's one approval channel (§7.4, `M13-1`) — `None` in every frontend that
+    /// doesn't wire one up yet (`mate-cli`'s plain frontend, every test helper below).
+    /// `mate_core::session::SessionManager::spawn` overwrites this the same way it already
+    /// overwrites `cancel` and `activity`.
+    pub approvals: Option<Arc<dyn Approvals>>,
 }
 
 impl ToolCtx {
@@ -79,6 +82,7 @@ mod tests {
             spawner: None,
             activity,
             cancel: CancellationToken::new(),
+            approvals: None,
         }
     }
 

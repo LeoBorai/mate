@@ -11,6 +11,7 @@ mod panel;
 mod panel_widgets;
 mod roster;
 mod session_factory;
+mod slash;
 mod text;
 mod transcript;
 mod ui;

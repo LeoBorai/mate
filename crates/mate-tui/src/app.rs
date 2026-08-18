@@ -39,15 +39,17 @@ use mate_core::cost::{ModelRate, estimate_cost};
 use mate_core::session::{SessionCmd, SessionEvent, SessionHandle, SessionId, SessionManager};
 use mate_core::streaming::{AgentEvent, UsageRollup};
 use mate_tool_api::AgentId;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use tokio::sync::mpsc;
 use tokio::time::{Duration, Interval, MissedTickBehavior, interval};
+use ulid::Ulid;
 
 use crate::input::InputBox;
 use crate::panel::Panel;
 use crate::panel_widgets::{PanelFocus, PanelWidgetKind};
 use crate::roster::Roster;
 use crate::session_factory::{self, SessionDefaults};
+use crate::slash::SlashCommand;
 use crate::transcript::Transcript;
 use crate::ui::{self, AppView};
 use crate::wrap::WrapCache;
@@ -72,6 +74,12 @@ pub struct InitialSession {
     pub root: PathBuf,
     /// The `MODEL` widget's third line (§9.4) — `None` when delegation is off.
     pub subagent_model: Option<String>,
+    /// Whether this tab's agent actually has `http_request` attached — `/tools`/`/http`
+    /// (`M13-3`) report this, not `SessionDefaults`, since a tab's own toolset can differ from
+    /// the defaults it started from (the spawn form's http toggle).
+    pub http_enabled: bool,
+    /// Whether this tab's root agent actually has `spawn_agent` attached.
+    pub may_delegate: bool,
 }
 
 /// A read-only detail popup (`M12-9`'s `Enter` on a focused panel row) — one flavor for
@@ -81,6 +89,16 @@ pub struct InitialSession {
 pub(crate) struct DetailModal {
     pub(crate) title: String,
     pub(crate) lines: Vec<String>,
+}
+
+/// One outstanding approval request (`M13-2`), queued per tab — `Enter`/`y`/`n` on the front of
+/// the queue is the whole interaction surface (§7.4: binary, no free text). `agent` is who
+/// asked, root or a subagent, so the modal can label it distinctly.
+pub(crate) struct PendingApproval {
+    pub(crate) id: Ulid,
+    pub(crate) agent: AgentId,
+    pub(crate) name: String,
+    pub(crate) detail: String,
 }
 
 /// One tab's live state (`M8-2`). Everything that was a flat field on `App` before `M8` — the
@@ -123,9 +141,17 @@ struct SessionTab {
     panel_focus: Option<PanelFocus>,
     /// `Enter` on a focused list row (`M12-9`) — read-only, closed by `Esc` or `Enter` again.
     detail_modal: Option<DetailModal>,
+    /// `M13-2`'s approval queue — front is what `App::view` renders and `handle_approval_key`
+    /// decides; anything behind it just waits.
+    pending_approvals: VecDeque<PendingApproval>,
+    /// `/tools`/`/http` (`M13-3`) read these rather than `SessionDefaults`, since a tab's actual
+    /// toolset can diverge from the defaults it was spawned from.
+    http_enabled: bool,
+    may_delegate: bool,
 }
 
 impl SessionTab {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         id: SessionId,
         handle: SessionHandle,
@@ -134,6 +160,8 @@ impl SessionTab {
         provider: String,
         subagent_model: Option<String>,
         root: PathBuf,
+        http_enabled: bool,
+        may_delegate: bool,
     ) -> Self {
         Self {
             id,
@@ -157,6 +185,9 @@ impl SessionTab {
             panel_visible: true,
             panel_focus: None,
             detail_modal: None,
+            pending_approvals: VecDeque::new(),
+            http_enabled,
+            may_delegate,
         }
     }
 }
@@ -273,6 +304,8 @@ impl App {
                     s.provider,
                     s.subagent_model,
                     s.root,
+                    s.http_enabled,
+                    s.may_delegate,
                 )
             })
             .collect();
@@ -323,11 +356,30 @@ impl App {
             title: &m.title,
             lines: &m.lines,
         });
+        let approval_modal = tab
+            .pending_approvals
+            .front()
+            .map(|a| ui::ApprovalModalView {
+                agent_label: if a.agent == AgentId::ROOT {
+                    "mate"
+                } else {
+                    tab.roster
+                        .rows()
+                        .iter()
+                        .find(|r| r.id == a.agent)
+                        .map(|r| r.label.as_str())
+                        .unwrap_or("a subagent")
+                },
+                name: &a.name,
+                detail: &a.detail,
+                queued: tab.pending_approvals.len().saturating_sub(1),
+            });
         AppView {
             tabs,
             active,
             spawn_form,
             detail_modal,
+            approval_modal,
             session: ui::View {
                 transcript: &tab.transcript,
                 wrap: &mut tab.wrap,
@@ -395,8 +447,20 @@ impl App {
                 }
                 return;
             }
-            AgentEvent::ApprovalRequired { .. } if event.agent != AgentId::ROOT => {
-                tab.roster.awaiting_approval(event.agent);
+            // `M13-2`: queued regardless of which agent asked — root and subagent requests
+            // share one per-tab queue, rendered as a modal only while this tab is active
+            // (`App::view`). A subagent's request also updates its roster row, since that's
+            // the only place a *background subagent's* pending approval is visible at all.
+            AgentEvent::ApprovalRequired { id, name, detail } => {
+                if event.agent != AgentId::ROOT {
+                    tab.roster.awaiting_approval(event.agent);
+                }
+                tab.pending_approvals.push_back(PendingApproval {
+                    id: *id,
+                    agent: event.agent,
+                    name: name.clone(),
+                    detail: detail.clone(),
+                });
                 if !is_active {
                     tab.needs_attention = true;
                 }
@@ -452,8 +516,11 @@ impl App {
                 tab.usage.record_root_turn(usage);
                 None
             }
-            // The root agent's own approval request: no consumer until `M13`'s modal.
-            AgentEvent::ApprovalRequired { .. } => None,
+            // Handled unconditionally above, before the root-only gate — every
+            // `ApprovalRequired`, root or subagent, returns from that arm.
+            AgentEvent::ApprovalRequired { .. } => {
+                unreachable!("handled above, before the root-only gate")
+            }
             // Always tagged with a non-root `AgentId` (`crate::subagent::drive_subagent`), so
             // these never reach here — the arms above already returned. Kept for exhaustiveness.
             AgentEvent::SubagentSpawned { .. } | AgentEvent::SubagentFinished { .. } => None,
@@ -556,6 +623,13 @@ impl App {
             return;
         }
 
+        // `M13-2`: an open approval request takes priority over everything below — including
+        // the detail modal and panel focus — since a decision blocks the calling tool's turn.
+        if !self.tabs[self.active].pending_approvals.is_empty() {
+            self.handle_approval_key(key).await;
+            return;
+        }
+
         // `M12-9`: the modal takes priority when open, then panel focus — a printable key with
         // no panel-specific meaning clears focus and falls through to the input box below,
         // rather than being swallowed, so the character the user typed still lands (§9.12).
@@ -571,6 +645,14 @@ impl App {
         }
 
         if let Some(prompt) = self.tabs[self.active].input.on_key(key) {
+            // `M13-3`: parsed and fully dispatched before anything below ever considers sending
+            // a turn — an unknown command still never reaches the model (its own `Unknown` arm
+            // just prints feedback), and a known command never falls through to `SessionCmd::
+            // Prompt` at all.
+            if let Some(command) = crate::slash::parse(&prompt) {
+                self.handle_slash_command(command).await;
+                return;
+            }
             // §5.2: one turn at a time — a prompt sent while another is in flight is dropped
             // by the session task anyway, so don't even send it, and keep the draft the user
             // typed instead of losing it.
@@ -759,6 +841,215 @@ impl App {
             .await;
     }
 
+    /// `y`/`n`/`Esc` on the front of the active tab's approval queue (`M13-2`). Any other key
+    /// is ignored (the queue stays exactly as it was) rather than falling through anywhere
+    /// else — while a decision is pending, no other key has a meaning here.
+    async fn handle_approval_key(&mut self, key: KeyEvent) {
+        let idx = self.active;
+        let granted = match key.code {
+            KeyCode::Char('y' | 'Y') => true,
+            KeyCode::Char('n' | 'N') | KeyCode::Esc => false,
+            _ => return,
+        };
+        let Some(approval) = self.tabs[idx].pending_approvals.pop_front() else {
+            return;
+        };
+        let _ = self.tabs[idx]
+            .handle
+            .send(SessionCmd::Approve {
+                id: approval.id,
+                granted,
+            })
+            .await;
+    }
+
+    /// Appends one line of local command feedback to the active tab (`M13-3`) — never sent to
+    /// the model, and rendered distinctly from `SystemError` (§ `Entry::System`'s own doc).
+    fn push_system(&mut self, text: impl Into<String>) {
+        let tab = &mut self.tabs[self.active];
+        if let Some(evicted) = tab.transcript.push_system(text.into()) {
+            tab.wrap.invalidate(evicted);
+        }
+    }
+
+    /// `/` command dispatch (`M13-3`), parsed by [`crate::slash::parse`] before this is ever
+    /// called — every arm here either performs a local action or writes one `push_system` line,
+    /// and none of them can reach `SessionCmd::Prompt`.
+    async fn handle_slash_command(&mut self, command: SlashCommand) {
+        match command {
+            SlashCommand::New(dir) => self.spawn_tab_from_command(dir).await,
+            SlashCommand::Close => self.request_close_active().await,
+            SlashCommand::Rename(Some(name)) => self.tabs[self.active].title = name,
+            SlashCommand::Rename(None) => self.push_system("usage: /rename <name>"),
+            SlashCommand::Model(arg) => self.show_or_set_model(arg),
+            SlashCommand::Provider(arg) => self.show_or_set_provider(arg),
+            SlashCommand::Tools => self.show_tools(),
+            SlashCommand::Http(arg) => self.show_or_set_http(arg),
+            SlashCommand::Clear => self.clear_active_transcript(),
+            SlashCommand::Tokens => self.show_tokens(),
+            SlashCommand::Quit => self.should_quit = true,
+            SlashCommand::Unknown(name) => self.push_system(format!("unknown command: /{name}")),
+        }
+    }
+
+    /// `/new [dir]` (`M13-3`): the non-modal equivalent of `Ctrl+T` + Enter — same
+    /// `session_factory` assembly `submit_spawn_form` uses, minus the model/http override
+    /// fields the modal form exposes. A bad directory or a full `SessionManager` reports as a
+    /// `push_system` line rather than popping a form back up, since there's no form here to
+    /// return to.
+    async fn spawn_tab_from_command(&mut self, dir: Option<String>) {
+        let dir_input = dir.unwrap_or_else(|| ".".to_string());
+        let root = match dunce::canonicalize(&dir_input) {
+            Ok(root) => root,
+            Err(_) => {
+                self.push_system(format!("no such directory: {dir_input}"));
+                return;
+            }
+        };
+        let title = root
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "mate".to_string());
+        let http_enabled = self.defaults.http.enabled;
+        let spec = session_factory::build_spec(&self.defaults, &root, title.clone(), http_enabled);
+        let ctx = session_factory::build_tool_ctx(root.clone(), self.defaults.max_output_bytes);
+
+        match self.manager.spawn(&spec, ctx) {
+            Ok(handle) => {
+                let provider = self.defaults.provider_label();
+                let subagent_model = self.defaults.subagent_model_label();
+                let may_delegate = self.defaults.delegation.enabled;
+                self.tabs.push(SessionTab::new(
+                    handle.id,
+                    handle,
+                    title,
+                    self.defaults.model.clone(),
+                    provider,
+                    subagent_model,
+                    root,
+                    http_enabled,
+                    may_delegate,
+                ));
+                let new_idx = self.tabs.len() - 1;
+                self.switch_to(new_idx);
+            }
+            Err(err) => self.push_system(err.to_string()),
+        }
+    }
+
+    /// `/model [id]` (`M13-3`): reports the active tab's own model with no argument. With one,
+    /// updates the default new tabs (`Ctrl+T`/`/new`) start from — the running agent's model is
+    /// baked into its already-built `Agent<M>` and can't be swapped live, so this is honest
+    /// about what it actually changes rather than promising something it can't do.
+    fn show_or_set_model(&mut self, arg: Option<String>) {
+        match arg {
+            None => {
+                let model = self.tabs[self.active].model.clone();
+                self.push_system(format!("model: {model} (this tab)"));
+            }
+            Some(model) => {
+                self.defaults.model = model.clone();
+                self.push_system(format!(
+                    "default model set to {model} for new tabs (/new, Ctrl+T) — this tab keeps its own"
+                ));
+            }
+        }
+    }
+
+    fn show_or_set_provider(&mut self, arg: Option<String>) {
+        match arg {
+            None => {
+                let provider = self.tabs[self.active].provider.clone();
+                self.push_system(format!("provider: {provider} (this tab)"));
+            }
+            Some(provider) => {
+                self.defaults.sub_provider = Some(provider.clone());
+                self.push_system(format!(
+                    "default provider set to {provider} for new tabs (/new, Ctrl+T) — this tab keeps its own"
+                ));
+            }
+        }
+    }
+
+    /// `/tools` (`M13-3`): lists the active tab's actually-attached tools, derived from
+    /// `SessionTab::http_enabled`/`may_delegate` rather than `SessionDefaults` — a tab's own
+    /// toolset can diverge from the defaults it was spawned from (the spawn form's http toggle).
+    fn show_tools(&mut self) {
+        let tab = &self.tabs[self.active];
+        let mut names = vec!["read_file", "list_dir", "find_files"];
+        if tab.http_enabled {
+            names.push("http_request");
+        }
+        if tab.may_delegate {
+            names.push("spawn_agent");
+        }
+        self.push_system(format!("tools: {}", names.join(", ")));
+    }
+
+    /// `/http [on|off]` (`M13-3`): same "report this tab, set the default" shape as `/model` —
+    /// the http tool is attached at agent-build time, so toggling it can't take effect on a
+    /// tab that's already running.
+    fn show_or_set_http(&mut self, arg: Option<String>) {
+        match arg {
+            None => {
+                let enabled = self.tabs[self.active].http_enabled;
+                self.push_system(format!(
+                    "http: {} (this tab)",
+                    if enabled { "on" } else { "off" }
+                ));
+            }
+            Some(value) => {
+                let enabled = match value.to_ascii_lowercase().as_str() {
+                    "on" => true,
+                    "off" => false,
+                    _ => {
+                        self.push_system("usage: /http [on|off]");
+                        return;
+                    }
+                };
+                self.defaults.http.enabled = enabled;
+                self.push_system(format!(
+                    "http tool set to {} for new tabs (/new, Ctrl+T) — this tab's agent is \
+                     already built and can't be changed live",
+                    if enabled { "on" } else { "off" }
+                ));
+            }
+        }
+    }
+
+    /// `/tokens` (`M13-3`): the same sent/received/cost figures the bottom status bar and
+    /// `CONTEXT` widget already show, as one line the user can keep in their scrollback.
+    fn show_tokens(&mut self) {
+        let tab = &self.tabs[self.active];
+        let cost = estimate_cost(
+            &tab.usage,
+            &tab.model,
+            tab.subagent_model.as_deref().unwrap_or(&tab.model),
+            &self.pricing,
+        );
+        let sent = tab.usage.root.input_tokens + tab.usage.subagents.input_tokens;
+        let recv = tab.usage.root.output_tokens + tab.usage.subagents.output_tokens;
+        let cost_text = if cost.known {
+            format!(
+                "~${:.2} (avg ${:.3}/turn)",
+                cost.total_usd, cost.per_turn_avg
+            )
+        } else {
+            "~$? (unpriced model, see [pricing])".to_string()
+        };
+        self.push_system(format!("tokens: {sent}↑ {recv}↓ · {cost_text}"));
+    }
+
+    /// `/clear` (`M13-3`): wipes the active tab's transcript and its wrap cache — a fresh
+    /// `Transcript`/`WrapCache` is simpler and just as correct as evicting entry by entry, since
+    /// nothing outside this tab holds a reference to either.
+    fn clear_active_transcript(&mut self) {
+        let tab = &mut self.tabs[self.active];
+        tab.transcript = Transcript::new();
+        tab.wrap = WrapCache::new();
+        tab.scroll = 0;
+    }
+
     async fn handle_spawn_form_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc => {
@@ -828,6 +1119,7 @@ impl App {
             Ok(handle) => {
                 let provider = defaults.provider_label();
                 let subagent_model = defaults.subagent_model_label();
+                let may_delegate = defaults.delegation.enabled;
                 self.tabs.push(SessionTab::new(
                     handle.id,
                     handle,
@@ -836,6 +1128,8 @@ impl App {
                     provider,
                     subagent_model,
                     root,
+                    form.http_enabled,
+                    may_delegate,
                 ));
                 let new_idx = self.tabs.len() - 1;
                 self.switch_to(new_idx);
@@ -1014,6 +1308,7 @@ mod tests {
             spawner: None,
             activity: tokio::sync::mpsc::channel(1).0,
             cancel: CancellationToken::new(),
+            approvals: None,
         }
     }
 
@@ -1050,6 +1345,8 @@ mod tests {
                 provider: "huggingface".to_string(),
                 root: PathBuf::from("."),
                 subagent_model: None,
+                http_enabled: true,
+                may_delegate: false,
             });
         }
         App::new(manager, events_rx, sessions, defaults(), HashMap::new())
@@ -1440,5 +1737,174 @@ mod tests {
             .await;
 
         assert!(app.tabs[0].detail_modal.is_none());
+    }
+
+    // --- `M13-2`: the approval modal ---------------------------------------------------------
+
+    async fn submit(app: &mut App, text: &str) {
+        for c in text.chars() {
+            app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))
+                .await;
+        }
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+    }
+
+    fn approval_required(id: Ulid) -> AgentEvent {
+        AgentEvent::ApprovalRequired {
+            id,
+            name: "http_request".to_string(),
+            detail: "POST https://example.com".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn an_approval_request_queues_regardless_of_which_agent_asked() {
+        let mut app = test_app(1);
+        let session = app.tabs[0].id;
+        let id = Ulid::generate();
+
+        app.on_session_event(SessionEvent {
+            session,
+            agent: AgentId::ROOT,
+            event: approval_required(id),
+        });
+
+        assert_eq!(app.tabs[0].pending_approvals.len(), 1);
+        assert_eq!(app.tabs[0].pending_approvals[0].agent, AgentId::ROOT);
+    }
+
+    #[tokio::test]
+    async fn a_background_tabs_approval_sets_needs_attention_without_touching_the_active_tab() {
+        let mut app = test_app(2);
+        let background = app.tabs[1].id;
+
+        app.on_session_event(SessionEvent {
+            session: background,
+            agent: AgentId::ROOT,
+            event: approval_required(Ulid::generate()),
+        });
+
+        assert!(app.tabs[1].needs_attention);
+        assert!(app.tabs[0].pending_approvals.is_empty());
+    }
+
+    #[tokio::test]
+    async fn y_grants_the_front_of_the_queue_and_sends_session_cmd_approve() {
+        let mut app = test_app(1);
+        let session = app.tabs[0].id;
+        let id = Ulid::generate();
+        app.on_session_event(SessionEvent {
+            session,
+            agent: AgentId::ROOT,
+            event: approval_required(id),
+        });
+
+        app.on_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE))
+            .await;
+
+        assert!(
+            app.tabs[0].pending_approvals.is_empty(),
+            "a decision must pop the request off the queue"
+        );
+    }
+
+    #[tokio::test]
+    async fn while_an_approval_is_pending_a_printable_key_never_reaches_the_input() {
+        let mut app = test_app(1);
+        let session = app.tabs[0].id;
+        app.on_session_event(SessionEvent {
+            session,
+            agent: AgentId::ROOT,
+            event: approval_required(Ulid::generate()),
+        });
+
+        app.on_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE))
+            .await;
+
+        assert!(
+            app.tabs[0].input.is_empty(),
+            "an unrelated printable key while an approval is open must not leak into the input"
+        );
+        assert_eq!(
+            app.tabs[0].pending_approvals.len(),
+            1,
+            "an unrecognized key (not y/n/Esc) must leave the pending request untouched"
+        );
+    }
+
+    // --- `M13-3`: slash commands -------------------------------------------------------------
+
+    #[tokio::test]
+    async fn an_unknown_command_never_reaches_the_model_and_reports_itself() {
+        let mut app = test_app(1);
+        submit(&mut app, "/frobnicate").await;
+
+        assert!(
+            !app.tabs[0].running_turn,
+            "an unknown slash command must never start a turn"
+        );
+        let entries: Vec<&crate::transcript::Entry> = app.tabs[0].transcript.iter().collect();
+        assert!(matches!(
+            entries.last(),
+            Some(crate::transcript::Entry::System { text, .. })
+                if text.contains("unknown command: /frobnicate")
+        ));
+    }
+
+    #[tokio::test]
+    async fn quit_sets_should_quit_without_a_confirmation() {
+        let mut app = test_app(1);
+        submit(&mut app, "/quit").await;
+        assert!(app.should_quit);
+    }
+
+    #[tokio::test]
+    async fn rename_with_no_argument_reports_usage_and_leaves_the_title_unchanged() {
+        let mut app = test_app(1);
+        let original = app.tabs[0].title.clone();
+        submit(&mut app, "/rename").await;
+
+        assert_eq!(app.tabs[0].title, original);
+        let entries: Vec<&crate::transcript::Entry> = app.tabs[0].transcript.iter().collect();
+        assert!(matches!(
+            entries.last(),
+            Some(crate::transcript::Entry::System { text, .. }) if text.contains("usage")
+        ));
+    }
+
+    #[tokio::test]
+    async fn rename_with_an_argument_renames_the_active_tab() {
+        let mut app = test_app(1);
+        submit(&mut app, "/rename api").await;
+        assert_eq!(app.tabs[0].title, "api");
+    }
+
+    #[tokio::test]
+    async fn clear_empties_the_transcript() {
+        let mut app = test_app(1);
+        app.tabs[0].transcript.push_user("hello".to_string());
+        assert!(!app.tabs[0].transcript.is_empty());
+
+        submit(&mut app, "/clear").await;
+
+        assert!(app.tabs[0].transcript.is_empty());
+    }
+
+    #[tokio::test]
+    async fn tools_lists_only_what_this_tab_actually_has_attached() {
+        let mut app = test_app(1);
+        app.tabs[0].http_enabled = false;
+        app.tabs[0].may_delegate = false;
+
+        submit(&mut app, "/tools").await;
+
+        let entries: Vec<&crate::transcript::Entry> = app.tabs[0].transcript.iter().collect();
+        let crate::transcript::Entry::System { text, .. } = entries.last().unwrap() else {
+            panic!("expected a System entry");
+        };
+        assert!(!text.contains("http_request"));
+        assert!(!text.contains("spawn_agent"));
+        assert!(text.contains("read_file"));
     }
 }
