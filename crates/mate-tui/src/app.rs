@@ -356,21 +356,24 @@ impl App {
             title: &m.title,
             lines: &m.lines,
         });
-        let approval_modal = tab.pending_approvals.front().map(|a| ui::ApprovalModalView {
-            agent_label: if a.agent == AgentId::ROOT {
-                "mate"
-            } else {
-                tab.roster
-                    .rows()
-                    .iter()
-                    .find(|r| r.id == a.agent)
-                    .map(|r| r.label.as_str())
-                    .unwrap_or("a subagent")
-            },
-            name: &a.name,
-            detail: &a.detail,
-            queued: tab.pending_approvals.len().saturating_sub(1),
-        });
+        let approval_modal = tab
+            .pending_approvals
+            .front()
+            .map(|a| ui::ApprovalModalView {
+                agent_label: if a.agent == AgentId::ROOT {
+                    "mate"
+                } else {
+                    tab.roster
+                        .rows()
+                        .iter()
+                        .find(|r| r.id == a.agent)
+                        .map(|r| r.label.as_str())
+                        .unwrap_or("a subagent")
+                },
+                name: &a.name,
+                detail: &a.detail,
+                queued: tab.pending_approvals.len().saturating_sub(1),
+            });
         AppView {
             tabs,
             active,
@@ -885,9 +888,7 @@ impl App {
             SlashCommand::Clear => self.clear_active_transcript(),
             SlashCommand::Tokens => self.show_tokens(),
             SlashCommand::Quit => self.should_quit = true,
-            SlashCommand::Unknown(name) => {
-                self.push_system(format!("unknown command: /{name}"))
-            }
+            SlashCommand::Unknown(name) => self.push_system(format!("unknown command: /{name}")),
         }
     }
 
@@ -1029,7 +1030,10 @@ impl App {
         let sent = tab.usage.root.input_tokens + tab.usage.subagents.input_tokens;
         let recv = tab.usage.root.output_tokens + tab.usage.subagents.output_tokens;
         let cost_text = if cost.known {
-            format!("~${:.2} (avg ${:.3}/turn)", cost.total_usd, cost.per_turn_avg)
+            format!(
+                "~${:.2} (avg ${:.3}/turn)",
+                cost.total_usd, cost.per_turn_avg
+            )
         } else {
             "~$? (unpriced model, see [pricing])".to_string()
         };
@@ -1758,7 +1762,7 @@ mod tests {
     async fn an_approval_request_queues_regardless_of_which_agent_asked() {
         let mut app = test_app(1);
         let session = app.tabs[0].id;
-        let id = Ulid::new();
+        let id = Ulid::generate();
 
         app.on_session_event(SessionEvent {
             session,
@@ -1778,7 +1782,7 @@ mod tests {
         app.on_session_event(SessionEvent {
             session: background,
             agent: AgentId::ROOT,
-            event: approval_required(Ulid::new()),
+            event: approval_required(Ulid::generate()),
         });
 
         assert!(app.tabs[1].needs_attention);
@@ -1789,7 +1793,7 @@ mod tests {
     async fn y_grants_the_front_of_the_queue_and_sends_session_cmd_approve() {
         let mut app = test_app(1);
         let session = app.tabs[0].id;
-        let id = Ulid::new();
+        let id = Ulid::generate();
         app.on_session_event(SessionEvent {
             session,
             agent: AgentId::ROOT,
@@ -1812,7 +1816,7 @@ mod tests {
         app.on_session_event(SessionEvent {
             session,
             agent: AgentId::ROOT,
-            event: approval_required(Ulid::new()),
+            event: approval_required(Ulid::generate()),
         });
 
         app.on_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE))

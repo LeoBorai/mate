@@ -307,7 +307,9 @@ mod tests {
             3,
             "a system entry must never merge into the streaming assistant text around it"
         );
-        assert!(matches!(entries[1], Entry::System { text, .. } if text == "unknown command: /xyz"));
+        assert!(
+            matches!(entries[1], Entry::System { text, .. } if text == "unknown command: /xyz")
+        );
     }
 
     #[test]

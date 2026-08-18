@@ -22,7 +22,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use mate_tool_api::{AgentId, ApprovalRequest as ToolApprovalRequest, Approvals};
+use mate_tool_api::{ApprovalRequest as ToolApprovalRequest, Approvals};
 use tokio::sync::{mpsc, oneshot};
 use ulid::Ulid;
 
@@ -48,7 +48,11 @@ impl SessionApprovalHub {
     /// Same as [`Self::new`] with an explicit timeout — real callers always get
     /// [`APPROVAL_TIMEOUT`] via `new`; this exists so the auto-deny test below doesn't have to
     /// wait five real minutes for one assertion.
-    fn with_timeout(session: SessionId, events_tx: mpsc::Sender<SessionEvent>, timeout: Duration) -> Self {
+    fn with_timeout(
+        session: SessionId,
+        events_tx: mpsc::Sender<SessionEvent>,
+        timeout: Duration,
+    ) -> Self {
         Self {
             session,
             events_tx,
@@ -75,7 +79,7 @@ impl SessionApprovalHub {
 #[async_trait]
 impl Approvals for SessionApprovalHub {
     async fn request(&self, request: ToolApprovalRequest) -> bool {
-        let id = Ulid::new();
+        let id = Ulid::generate();
         let (tx, rx) = oneshot::channel();
         self.pending.lock().expect("not poisoned").insert(id, tx);
 
@@ -109,6 +113,7 @@ impl Approvals for SessionApprovalHub {
 mod tests {
     use super::*;
 
+    use mate_tool_api::AgentId;
     use slotmap::SlotMap;
 
     fn session_id() -> SessionId {
@@ -204,11 +209,8 @@ mod tests {
     #[tokio::test]
     async fn an_unanswered_request_auto_denies_after_the_timeout_instead_of_hanging_forever() {
         let (events_tx, mut events_rx) = mpsc::channel(8);
-        let hub = SessionApprovalHub::with_timeout(
-            session_id(),
-            events_tx,
-            Duration::from_millis(20),
-        );
+        let hub =
+            SessionApprovalHub::with_timeout(session_id(), events_tx, Duration::from_millis(20));
 
         let run = tokio::spawn(async move { hub.request(request(AgentId::ROOT)).await });
         let _event = events_rx.recv().await.unwrap();

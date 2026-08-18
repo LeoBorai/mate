@@ -189,7 +189,10 @@ fn render_approval_modal(f: &mut Frame<'_>, area: Rect, modal: &ApprovalModalVie
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Yellow))
-        .title(format!(" approval requested — {} wants to run ", modal.agent_label));
+        .title(format!(
+            " approval requested — {} wants to run ",
+            modal.agent_label
+        ));
     let inner = block.inner(popup);
     f.render_widget(block, popup);
 
