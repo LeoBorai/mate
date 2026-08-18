@@ -61,7 +61,25 @@ resolver `3`.
 | `.agents/docs/error-handling.md` | a new error variant or error-propagation path (full detail in `CONTRIBUTING.md`) |
 | `.agents/docs/providers.md` | `Backend`, `build_agent`, preambles, provider error classification/retry |
 | `.agents/docs/streaming.md` | `AgentEvent`, the Rig stream-to-event mapping, cancellation, usage |
+| `.agents/docs/tools.md` | `ToolCtx`, `ToolFailure`, `ToolActivity`, the path jail, `mate-tool-fs`, `mate-tool-http`/SSRF guards |
+| `.agents/docs/delegation.md` | `spawn_agent`, `SubagentSpawner`/`SubagentRunner`, delegation guardrails, subagent cancellation |
+| `.agents/docs/panel.md` | the agent status panel, subagent roster, network/documents logs, cost estimation |
 | `.agents/docs/testing.md` | writing or reasoning about tests, or CI expectations |
+
+## Framework notes — read the ref that matches what you're touching
+
+| Ref | Read it when touching... |
+|---|---|
+| `refs/ratatui.md` | anything in `mate-tui`: widgets, layout, the panel framework, terminal lifecycle |
+| `refs/rig.md` | agent construction, tool impls (any `mate-tool-*` crate), streaming, `AgentHook`s, mock-model tests |
+| `refs/clap.md` | `mate-cli/src/cli.rs`, adding or changing a flag |
+
+These are gotchas and idioms for the *framework*, not this repo's own
+architecture — for what the code does and why, use the topic docs table
+above instead. Note also (`refs/ratatui.md`): hard rule 1 above is about
+*invoking* `cargo` — a sandboxed `rust-analyzer` flycheck process's output
+under `target/flycheck0/` is safe to *read* as compiler ground truth even
+though nothing here may trigger it.
 
 ## General practices
 
@@ -85,42 +103,15 @@ resolver `3`.
   `assert_eq!(report.turns, 2, "one completion call per mock stream turn")` —
   a future reader debugging a red test should learn the intent from the
   message alone, without reading the surrounding test body first.
-
-## Ratatui / TUI notes (`mate-tui`, `M7`+)
-
-- **Use `ratatui-textarea`, not `tui-textarea`.** `tui-textarea` 0.7.0 hard-pins `ratatui` 0.29
-  internally (its `Widget` impl targets that version's trait) and can't render into this
-  workspace's `ratatui` 0.30 `Frame` — confirmed by reading its source, not by trial and error.
-  `ratatui-textarea` (the `ratatui`-org continuation) tracks current `ratatui-core`/
-  `ratatui-widgets` and is the one in `workspace.dependencies`.
-- Translate `crossterm::event::KeyEvent` into `ratatui_textarea::Input` field by field
-  (`key`/`ctrl`/`alt`/`shift`, all public) instead of enabling that crate's own `crossterm`
-  feature — avoids ever needing its bundled crossterm version to line up with the workspace's.
-- A bare generic type in a fn signature (`&mut Frame`, `&View`) triggers Rust's "elided
-  lifetime in path" behavior silently rather than erroring — write `Frame<'_>` / `View<'_>`
-  explicitly so it isn't ambiguous to the next reader.
-- Rule 1 ("never run `cargo`") is about *me* invoking it. A `rust-analyzer` flycheck process
-  can be running in the sandbox independently — `target/flycheck0/{stdout,stderr}` (stdout is
-  `--message-format=json`, filter for `reason: "compiler-message"`) is real compiler ground
-  truth and safe to *read*; it just isn't safe to *trigger*. Don't poll it in a sleep loop —
-  check once, and treat a stale timestamp as "no new information," not as a compile failure.
-- `ui.rs` (rendering: layout, tab bar, status bar, transcript/input widgets) has no test
-  module — `TestBackend`/`insta` snapshot tests were removed as not worth their upkeep (hand-
-  verifying or hand-computing a character grid, including wide glyphs like emoji, is error-prone
-  and `cargo insta accept` needs `cargo`, which rule 1 blocks). Don't add a snapshot test back
-  here; verify rendering changes by reading the code and, if needed, asking the user to run the
-  TUI. `insta` is no longer a dependency of `mate-tui` or listed in the workspace
-  `Cargo.toml` — don't reintroduce it for this crate.
-- Adding a new side panel to `draw()`: wrap it in an outer `Layout::horizontal([Constraint::
-  Length(N), Constraint::Min(0)])` and put the existing vertical split inside the `Min(0)` chunk
-  — don't touch the vertical split itself.
-- `SessionHandle`/`SessionManager::spawn` (`mate-core/src/session.rs`) drop the `SessionSpec`
-  after building the `Agent` — nothing about model, sub_provider, or backend kind is retrievable
-  from the handle afterward. Any UI that needs to display them must have the caller
-  (`mate-cli/src/tui.rs`) pass them down explicitly as plain data (e.g. extra `String` args on
-  `mate_tui::run`), threaded through `App` and into `View`, rather than trying to pull them back
-  out of the session/backend layer.
-- `Backend` (`mate-core/src/backend.rs`) never stores a provider *name* string — it's an enum
-  (`HuggingFace { .. }` / `OpenAiCompatible(..)`) with no getter. For display purposes derive the
-  provider label at the call site instead (e.g. `config.sub_provider.clone().unwrap_or_else(||
-  "huggingface".into())`); don't add a getter to `Backend` just to feed a UI label.
+- **A tool is the security boundary, not a checkpoint in front of one.** Rig
+  executes tool calls automatically; there is no interception point between
+  model and `call()`. Any new filesystem/network capability enforces its own
+  jail/allowlist inside the tool itself (`ToolCtx::resolve` for paths,
+  `ip_guard`/`HttpShared` for network) — never assume a caller already
+  checked. See `.agents/docs/tools.md`.
+- **Subagent non-addressability (§7.6) is a hard invariant, enforced in the
+  types.** No user input reaches a running subagent, ever — its whole input
+  is preamble + task, fixed at spawn. Don't add a channel, setter, or field
+  that could let anything post-construction reach into a subagent's
+  conversation, even for a seemingly reasonable feature ("nudge the
+  subagent"). See `.agents/docs/delegation.md`.

@@ -11,12 +11,16 @@ provider match and calls `streaming::stream_turn` underneath.
   has to be retrofitted onto an existing event type later.
 - `AgentEvent` — one event per streamed item: `Token`, `ToolCallStarted`,
   `ToolResult`, `ApprovalRequired`, `SubagentSpawned`, `SubagentFinished`,
-  `Usage`, `TurnComplete`, `Error`. `SubagentSpawned`/`Finished` are now
-  produced by `mate-core/src/subagent.rs`'s `drive_subagent` (`M9`), tagged
-  with the subagent's own `AgentId`, not `AgentId::ROOT` — the routing key the
-  side panel (`M12`) will use. `ApprovalRequired` still has no producer
-  (`M13`) — it exists so the approval-flow work that does produce it isn't a
-  breaking enum change.
+  `Usage`, `Activity`, `TurnComplete`, `Error`. `SubagentSpawned`/`Finished`
+  are produced by `mate-core/src/subagent.rs`'s `drive_subagent` (`M9`,
+  `delegation.md`), tagged with the subagent's own `AgentId`, not
+  `AgentId::ROOT` — the routing key the side panel (`M12`, `panel.md`) uses.
+  `Activity(ToolActivity)` (`M11-4`) is folded onto this stream from
+  `ToolCtx::activity` by `SessionManager::spawn`, not produced by `drive`/
+  `map_item` itself — a tool call and its telemetry record don't arrive from
+  the same place `MultiTurnStreamItem` does. `ApprovalRequired` still has no
+  producer (`M13`) — it exists so the approval-flow work that does produce
+  it isn't a breaking enum change.
 - `SubagentOutcome` — `Completed{summary}` / `Failed{reason}` / `Cancelled` /
   `TimedOut`. Same "define before there's a producer" reasoning.
 - `AgentEventEnvelope { agent: AgentId, event: AgentEvent }` — every event is
@@ -74,14 +78,17 @@ Two separate match functions, on purpose:
 
 ## Usage
 
-`UsageRollup { root, subagents, per_turn }` accumulates token usage across
-turns; `subagents` stays at the zero sentinel — nothing in `mate-core::session`
-folds a `SubagentReport::usage` into it yet, since `UsageRollup` itself isn't
-wired into the session task at all until `M11`'s usage/cost work lands.
-`record_root_turn(usage)` folds one completed turn's `Usage` into `root` and
-pushes its `input_tokens` onto `per_turn` (sent-tokens-per-turn, oldest
-first — the raw data a sparkline would read; any windowing/capping for
-display is the display layer's job, not this one's).
+`UsageRollup { root, subagents, per_turn, turns }` accumulates token usage
+across turns. `record_root_turn(usage)` folds one completed root turn's
+`Usage` into `root`, increments `turns` (uncapped — the denominator
+`cost.rs`'s `per_turn_avg` needs, since `per_turn` itself is capped), and
+pushes `input_tokens` onto `per_turn` (sent-tokens-per-turn, oldest first,
+capped at `PER_TURN_HISTORY` — the raw data the panel's sparkline reads;
+`panel.md`). `record_subagent_turn(usage)` (`M11-5`) folds one subagent
+completion round's `Usage` into `subagents` — called once per
+`AgentEvent::Usage` tagged with a non-root `AgentId`, the same cadence
+`record_root_turn` is called at for the root. No `per_turn`/`turns`
+bookkeeping for subagent turns — the sparkline is root-only.
 
 ## Testing pattern
 

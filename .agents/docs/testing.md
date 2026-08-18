@@ -5,9 +5,12 @@
 - **Filesystem tools** (`mate-tool-fs`, `M3`): test over `tempfile::TempDir` —
   traversal, absolute paths, outward symlinks, oversized files, binaries,
   denylisted names.
-- **HTTP tool** (`mate-tool-http`, not yet landed): test over `wiremock` —
-  redirect chains, oversized bodies, redirect loops, header stripping,
-  DNS-rebinding-style cases.
+- **HTTP tool** (`mate-tool-http`, landed): `wiremock` for anything needing a
+  real HTTP response (`crates/mate-tool-http/tests/http_request.rs`) —
+  redirect chains ending at a private IP, oversized bodies aborting
+  mid-stream, redirect loops, header stripping, 429 surfacing. `ip_guard`'s
+  IP-range checks and `headers`' hygiene rules are pure functions, table-
+  tested directly with no server involved. See `tools.md`.
 - **Session manager** (`mate-core/src/session.rs`, landed): drive
   `session_task` directly against Rig's mock model and mock tools (e.g.
   `MockControlledTool` for a genuine in-flight await point, a local panicking
@@ -23,7 +26,8 @@
   timeout, and cancellation propagation all drive real (mock) turns with no
   `Backend`/network involved. `SubagentSpawner::run` itself (the guardrails +
   real `Backend`/`build_agent` glue) only gets offline-constructible-`Backend`
-  coverage for the same reason `SessionManager::spawn`'s does.
+  coverage for the same reason `SessionManager::spawn`'s does. Full detail:
+  `delegation.md`.
 - **Agent/provider behavior**: Rig ships mock models and VCR-style cassette
   tests; record a scenario per case (tool call, error recovery, multi-turn)
   and replay in CI rather than hitting a live provider.
@@ -38,7 +42,10 @@
   `Backend::huggingface`'s offline construction the same way `mate-core/src/session.rs`'s own
   tests do — a real `SessionManager::spawn` builds an `Agent` value with no network I/O, so `App`
   tests can spawn real tabs and exercise `switch_to`, `on_session_event`, `close_tab`, and
-  `submit_spawn_form` without a mock model or a live provider.
+  `submit_spawn_form` without a mock model or a live provider. The `M12`
+  panel's own data-mutation logic (`Panel`/`Roster`/`allocate_list_heights`)
+  *is* unit-tested — only `Frame`-rendering code stays untested. See
+  `panel.md`.
 - **Config precedence** (landed): `figment::Jail`, one test per layer — see
   `config.md`.
 
