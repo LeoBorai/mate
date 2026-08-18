@@ -1,5 +1,7 @@
 # mate
 
+![mate demo](docs/demo.gif)
+
 A terminal coding agent. `mate` chats with a HuggingFace-hosted model over your workspace,
 can read files and make outbound HTTP requests on your own behalf, and can delegate narrow
 sub-tasks to short-lived subordinate agents so its own context stays small. It runs either as a
