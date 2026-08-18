@@ -45,8 +45,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use mate_tool_api::{
-    ActivitySink, AgentId, SubagentOutcome, SubagentReport, SubagentRequest, SubagentSpawner,
-    ToolCtx, ToolFailure, ToolProfile, truncate_with_notice,
+    ActivitySink, AgentId, Approvals, SubagentOutcome, SubagentReport, SubagentRequest,
+    SubagentSpawner, ToolCtx, ToolFailure, ToolProfile, truncate_with_notice,
 };
 use mate_tool_http::HttpShared;
 use rig::agent::Agent;
@@ -74,6 +74,10 @@ pub struct SubagentRunner {
     /// clone of this, rather than each building its own throwaway channel, so a subagent's
     /// `ToolActivity` records reach the same forwarding task the root agent's do.
     activity: ActivitySink,
+    /// The session's one shared approval hub (§7.4, `M13-1`) — every subagent's `ToolCtx` gets
+    /// the same `Arc`, for the same reason `activity` above does: one channel per session, never
+    /// per agent, is what keeps two concurrent requests from deadlocking behind each other.
+    approvals: Arc<dyn Approvals>,
     root: PathBuf,
     max_output_bytes: usize,
     model: String,
@@ -114,6 +118,7 @@ impl SubagentRunner {
         session: SessionId,
         events_tx: mpsc::Sender<SessionEvent>,
         activity: ActivitySink,
+        approvals: Arc<dyn Approvals>,
         root: PathBuf,
         max_output_bytes: usize,
         root_agent: &AgentSpec,
@@ -125,6 +130,7 @@ impl SubagentRunner {
             session,
             events_tx,
             activity,
+            approvals,
             root,
             max_output_bytes,
             model: root_agent.model.clone(),
@@ -173,6 +179,7 @@ impl SubagentRunner {
             session: self.session,
             events_tx: self.events_tx.clone(),
             activity: self.activity.clone(),
+            approvals: self.approvals.clone(),
             root: self.root.clone(),
             max_output_bytes: self.max_output_bytes,
             model: self.model.clone(),
@@ -245,6 +252,7 @@ impl SubagentSpawner for SubagentRunner {
             spawner: may_delegate.then(|| self.nested() as Arc<dyn SubagentSpawner>),
             activity: self.activity.clone(),
             cancel: cancel.clone(),
+            approvals: Some(self.approvals.clone()),
         };
 
         let max_turns = request
@@ -464,6 +472,11 @@ mod tests {
         );
         let http_shared = Arc::new(HttpShared::new(60).unwrap());
         let (events_tx, events_rx) = mpsc::channel(64);
+        let sid = session_id();
+        let approvals = Arc::new(crate::approval::SessionApprovalHub::new(
+            sid,
+            events_tx.clone(),
+        )) as Arc<dyn Approvals>;
         let spec = AgentSpec {
             model: "org/root-model".to_string(),
             sub_provider: None,
@@ -481,9 +494,10 @@ mod tests {
             SubagentRunner::new(
                 backend,
                 http_shared,
-                session_id(),
+                sid,
                 events_tx,
                 activity,
+                approvals,
                 PathBuf::from("."),
                 1_000_000,
                 &spec,

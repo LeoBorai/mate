@@ -7,12 +7,14 @@
 //! [`ToolActivity`] both need to carry it, and this crate can never depend on `mate-core`.
 
 mod activity;
+mod approval;
 mod ctx;
 mod error;
 mod ids;
 mod subagent;
 
 pub use activity::{ActivitySink, FileOp, ToolActivity};
+pub use approval::{ApprovalRequest, Approvals};
 pub use ctx::ToolCtx;
 pub use error::{ToolFailure, enforce_max_size, number_lines, refuse_binary, truncate_with_notice};
 pub use ids::AgentId;

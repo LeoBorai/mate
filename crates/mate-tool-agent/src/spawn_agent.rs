@@ -182,6 +182,7 @@ mod tests {
             spawner,
             activity,
             cancel: CancellationToken::new(),
+            approvals: None,
         }
     }
 

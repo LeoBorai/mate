@@ -24,6 +24,7 @@ fn ctx() -> ToolCtx {
         spawner: None,
         activity,
         cancel: tokio_util::sync::CancellationToken::new(),
+        approvals: None,
     }
 }
 

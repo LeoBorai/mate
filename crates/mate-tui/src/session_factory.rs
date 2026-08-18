@@ -105,6 +105,7 @@ pub fn build_tool_ctx(root: PathBuf, max_output_bytes: usize) -> ToolCtx {
         spawner: None,
         activity,
         cancel: CancellationToken::new(),
+        approvals: None,
     }
 }
 

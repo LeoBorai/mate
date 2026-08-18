@@ -95,6 +95,7 @@ pub async fn run(cli: &Cli, config: &Config) -> Result<(), MateError> {
         spawner: None,
         activity,
         cancel: cancel.clone(),
+        approvals: None,
     };
     let agent = build_agent(&backend, &http, &spec, ctx);
 

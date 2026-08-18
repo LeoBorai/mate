@@ -56,3 +56,30 @@ unconstructed enum variant is dead code, and CI runs `clippy -D warnings`. `Auth
 - A tool's error is not the same thing as the CLI's error. `ToolFailure` flows back into the
   model's context; `MateError` flows to a human's terminal and a process exit code. Don't
   conflate the two — a tool crate should never construct or depend on `MateError`.
+
+## Releasing (M13-6)
+
+**Dependency pin audit.** Two dependencies get non-default version-pinning treatment because a
+breaking change in either would break every crate in the workspace at once:
+
+- `rig`: `Cargo.toml` declares `rig = "0.41.0"`. Cargo's caret-requirement rule for a `0.y.z`
+  version only allows patch-level updates automatically (`>=0.41.0, <0.42.0`) — an ordinary
+  `"0.41.0"` requirement already behaves like an exact-minor pin here, so no `=` prefix is
+  needed. Bumping to a new *minor* (`0.42.x`) is a deliberate, reviewed `Cargo.toml` edit, never
+  an incidental `cargo update`.
+- `schemars`: `Cargo.toml` declares `schemars = "1.2.2"` — major version 1, as every tool
+  crate's `#[derive(JsonSchema)]` usage and `///`-doc-comment-driven field descriptions require
+  (schemars 0.8 examples found online silently produce schemas with no descriptions, which is
+  most of what makes a model call the right tool).
+
+Both are already correct as of this writing; re-check this section whenever either dependency's
+`Cargo.toml` line changes.
+
+**Cutting a release.** There is no automated version-bump or tag-push step — both are deliberate,
+reviewed actions:
+
+1. Bump `version` under `[workspace.package]` in the root `Cargo.toml`.
+2. Commit that bump, get it merged to `main`.
+3. Tag the merge commit `vX.Y.Z` and push the tag. `.github/workflows/release.yml` builds
+   release binaries for Linux and macOS and attaches them to a GitHub Release for that tag —
+   nothing else triggers it.
