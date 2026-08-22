@@ -183,6 +183,7 @@ mod tests {
             activity,
             cancel: CancellationToken::new(),
             approvals: None,
+            skills: Arc::from([]),
         }
     }
 

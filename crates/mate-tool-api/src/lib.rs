@@ -11,6 +11,7 @@ mod approval;
 mod ctx;
 mod error;
 mod ids;
+mod skills;
 mod subagent;
 
 pub use activity::{ActivitySink, FileOp, ToolActivity};
@@ -18,6 +19,7 @@ pub use approval::{ApprovalRequest, Approvals};
 pub use ctx::ToolCtx;
 pub use error::{ToolFailure, enforce_max_size, number_lines, refuse_binary, truncate_with_notice};
 pub use ids::AgentId;
+pub use skills::SkillMetadata;
 pub use subagent::{
     SubagentOutcome, SubagentReport, SubagentRequest, SubagentSpawner, ToolProfile,
 };

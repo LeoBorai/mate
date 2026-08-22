@@ -45,8 +45,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use mate_tool_api::{
-    ActivitySink, AgentId, Approvals, SubagentOutcome, SubagentReport, SubagentRequest,
-    SubagentSpawner, ToolCtx, ToolFailure, ToolProfile, truncate_with_notice,
+    ActivitySink, AgentId, Approvals, SkillMetadata, SubagentOutcome, SubagentReport,
+    SubagentRequest, SubagentSpawner, ToolCtx, ToolFailure, ToolProfile, truncate_with_notice,
 };
 use mate_tool_http::HttpShared;
 use rig::agent::Agent;
@@ -57,7 +57,7 @@ use tokio_util::sync::CancellationToken;
 use crate::agent::{BuiltAgent, build_agent};
 use crate::backend::Backend;
 use crate::config::{AgentSpec, DelegationPolicy, HttpPolicy};
-use crate::preamble::{PreambleRole, render_preamble};
+use crate::preamble::{PreambleRole, SkillDescriptor, render_preamble};
 use crate::session::{SessionEvent, SessionId, forward};
 use crate::streaming::{self, AgentEvent, AgentEventEnvelope};
 use crate::toolset::tool_descriptors;
@@ -80,6 +80,11 @@ pub struct SubagentRunner {
     approvals: Arc<dyn Approvals>,
     root: PathBuf,
     max_output_bytes: usize,
+    /// Skills discovered once, at session-build time, by whichever caller built the session's
+    /// root `ToolCtx` (`mate-cli`'s plain frontend, `mate-tui`'s `session_factory`) — never
+    /// re-walked here. Every subagent, at any depth, gets a clone of this same list, the same
+    /// "one value, threaded down" reasoning `activity`/`approvals` already use above.
+    skills: Arc<[SkillMetadata]>,
     model: String,
     sub_provider: Option<String>,
     base_url: Option<String>,
@@ -121,6 +126,7 @@ impl SubagentRunner {
         approvals: Arc<dyn Approvals>,
         root: PathBuf,
         max_output_bytes: usize,
+        skills: Arc<[SkillMetadata]>,
         root_agent: &AgentSpec,
     ) -> Self {
         let max_concurrent = root_agent.delegation.max_concurrent.max(1);
@@ -133,6 +139,7 @@ impl SubagentRunner {
             approvals,
             root,
             max_output_bytes,
+            skills,
             model: root_agent.model.clone(),
             sub_provider: root_agent.sub_provider.clone(),
             base_url: root_agent.base_url.clone(),
@@ -182,6 +189,7 @@ impl SubagentRunner {
             approvals: self.approvals.clone(),
             root: self.root.clone(),
             max_output_bytes: self.max_output_bytes,
+            skills: self.skills.clone(),
             model: self.model.clone(),
             sub_provider: self.sub_provider.clone(),
             base_url: self.base_url.clone(),
@@ -253,6 +261,7 @@ impl SubagentSpawner for SubagentRunner {
             activity: self.activity.clone(),
             cancel: cancel.clone(),
             approvals: Some(self.approvals.clone()),
+            skills: self.skills.clone(),
         };
 
         let max_turns = request
@@ -263,11 +272,17 @@ impl SubagentSpawner for SubagentRunner {
         let mut http = self.http.clone();
         http.enabled = self.http.enabled && matches!(request.tools, ToolProfile::ReadOnlyNet);
 
+        let skill_descriptors: Vec<SkillDescriptor> = self
+            .skills
+            .iter()
+            .map(|s| SkillDescriptor::new(s.name.clone(), s.description.clone()))
+            .collect();
         let preamble = render_preamble(
             PreambleRole::Subagent,
             &self.root,
             std::env::consts::OS,
-            &tool_descriptors(may_delegate, http.enabled),
+            &tool_descriptors(may_delegate, http.enabled, !self.skills.is_empty()),
+            &skill_descriptors,
         );
 
         let spec = AgentSpec {
@@ -500,6 +515,7 @@ mod tests {
                 approvals,
                 PathBuf::from("."),
                 1_000_000,
+                Arc::from([]),
                 &spec,
             ),
             events_rx,

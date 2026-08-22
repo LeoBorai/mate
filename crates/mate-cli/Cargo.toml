@@ -15,6 +15,7 @@ figment = { workspace = true }
 mate-core = { workspace = true }
 mate-tool-api = { workspace = true }
 mate-tool-http = { workspace = true }
+mate-tool-skills = { workspace = true }
 mate-tui = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }

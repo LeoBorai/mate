@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
 
-use crate::{ActivitySink, AgentId, Approvals, SubagentSpawner, ToolFailure};
+use crate::{ActivitySink, AgentId, Approvals, SkillMetadata, SubagentSpawner, ToolFailure};
 
 /// Everything a tool needs at construction time, captured by value into the tool struct
 /// (§8.1 note 2: `call(&self, args)` takes no context parameter, so root, caps, spawner,
@@ -32,6 +32,12 @@ pub struct ToolCtx {
     /// `mate_core::session::SessionManager::spawn` overwrites this the same way it already
     /// overwrites `cancel` and `activity`.
     pub approvals: Option<Arc<dyn Approvals>>,
+    /// Skills discovered under `.claude/skills`/`.opencode/skills`/`.copilot/skills`/
+    /// `.agents/skills` at session-build time — never re-walked per call. Empty unless the
+    /// workspace root actually has one of those directories. `mate_core::toolset::build_toolset`
+    /// attaches the `skill` tool only when this is non-empty, the same conditional-attachment
+    /// pattern `spawner`/http already use.
+    pub skills: Arc<[SkillMetadata]>,
 }
 
 impl ToolCtx {
@@ -83,6 +89,7 @@ mod tests {
             activity,
             cancel: CancellationToken::new(),
             approvals: None,
+            skills: Arc::from([]),
         }
     }
 

@@ -1309,6 +1309,7 @@ mod tests {
             activity: tokio::sync::mpsc::channel(1).0,
             cancel: CancellationToken::new(),
             approvals: None,
+            skills: std::sync::Arc::from([]),
         }
     }
 

@@ -12,6 +12,7 @@ mate-tool-agent = { workspace = true }
 mate-tool-api = { workspace = true }
 mate-tool-fs = { workspace = true }
 mate-tool-http = { workspace = true }
+mate-tool-skills = { workspace = true }
 reqwest = { workspace = true }
 rig = { workspace = true, features = ["reqwest", "rustls", "agent"] }
 serde = { workspace = true }
