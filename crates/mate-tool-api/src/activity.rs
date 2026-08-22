@@ -32,6 +32,11 @@ pub enum ToolActivity {
     },
     /// Free-form note, kept to ~60 chars for the subagent activity line.
     Note { text: String },
+    /// `mate-tool-skills`'s `skill` tool loaded a skill's full instructions. A structured
+    /// variant rather than folding into `Note` — the panel's SKILLS widget needs the exact
+    /// `name` to flip that skill's row from an empty circle to a green dot, and string-matching
+    /// a `Note`'s free text back into a name would be fragile.
+    SkillLoaded { name: String },
 }
 
 /// `Write`/`Create`/`Delete` exist now, ahead of any producer, so `mate-tool-edit` (§14)

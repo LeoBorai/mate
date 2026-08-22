@@ -1,4 +1,4 @@
-//! Agent Skills (issue #59): filesystem-discovered `SKILL.md` packages under
+//! Agent Skills: filesystem-discovered `SKILL.md` packages under
 //! `.claude/skills/`, `.opencode/skills/`, `.copilot/skills/`, and `.agents/skills/`, loaded
 //! on demand by the `skill` tool this crate exports.
 //!

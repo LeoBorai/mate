@@ -75,8 +75,8 @@ impl PortableTool for Skill {
 
         let _ = self.ctx.activity.try_send((
             self.ctx.agent,
-            ToolActivity::Note {
-                text: format!("skill `{}` loaded", metadata.name),
+            ToolActivity::SkillLoaded {
+                name: metadata.name.clone(),
             },
         ));
 
@@ -186,7 +186,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn emits_a_note_activity_record_naming_the_skill() {
+    async fn emits_a_skill_loaded_activity_record_naming_the_skill() {
         let tmp = tempfile::tempdir().unwrap();
         let root = dunce::canonicalize(tmp.path()).unwrap();
         let metadata = write_skill(
@@ -199,12 +199,12 @@ mod tests {
         let tool = Skill::new(ctx);
         tool.call(SkillArgs { name: "a".to_string() }).await.unwrap();
 
-        let (agent, activity) = rx.try_recv().expect("a Note record must be emitted");
+        let (agent, activity) = rx.try_recv().expect("a SkillLoaded record must be emitted");
         assert_eq!(agent, AgentId::ROOT);
         assert_eq!(
             activity,
-            ToolActivity::Note {
-                text: "skill `a` loaded".to_string()
+            ToolActivity::SkillLoaded {
+                name: "a".to_string()
             }
         );
     }

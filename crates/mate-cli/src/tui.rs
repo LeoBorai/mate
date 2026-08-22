@@ -57,6 +57,7 @@ pub async fn run(cli: &crate::cli::Cli, config: &Config) -> Result<(), MateError
         let title = title_for(root);
         let spec = mate_tui::build_spec(&defaults, root, title.clone(), defaults.http.enabled);
         let ctx = mate_tui::build_tool_ctx(root.clone(), defaults.max_output_bytes);
+        let skills = ctx.skills.to_vec();
         let handle = manager
             .spawn(&spec, ctx)
             .map_err(|err| MateError::Other(anyhow::anyhow!(err)))?;
@@ -70,6 +71,7 @@ pub async fn run(cli: &crate::cli::Cli, config: &Config) -> Result<(), MateError
             subagent_model: subagent_model.clone(),
             http_enabled: defaults.http.enabled,
             may_delegate: defaults.delegation.enabled,
+            skills,
         });
     }
 

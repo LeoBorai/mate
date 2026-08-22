@@ -25,8 +25,8 @@
 //! (§9.9).
 //!
 //! `Ctrl+P` (`M12-9`) focuses the panel: `Tab`/`Shift+Tab` cycles which widget has focus,
-//! `↑`/`↓` moves the focused row of whichever list widget (subagents/network/documents) that
-//! is, `Enter` opens a read-only [`DetailModal`] for that row (or, on the context widget,
+//! `↑`/`↓` moves the focused row of whichever list widget (subagents/network/documents/skills)
+//! that is, `Enter` opens a read-only [`DetailModal`] for that row (or, on the context widget,
 //! toggles its root/subagent split), `x` cancels the focused subagent, and any printable key
 //! returns focus to the input and is inserted there — there is no code path that routes text
 //! into a subagent (§7.6).
@@ -38,7 +38,7 @@ use futures::StreamExt;
 use mate_core::cost::{ModelRate, estimate_cost};
 use mate_core::session::{SessionCmd, SessionEvent, SessionHandle, SessionId, SessionManager};
 use mate_core::streaming::{AgentEvent, UsageRollup};
-use mate_tool_api::AgentId;
+use mate_tool_api::{AgentId, SkillMetadata};
 use std::collections::{HashMap, VecDeque};
 use tokio::sync::mpsc;
 use tokio::time::{Duration, Interval, MissedTickBehavior, interval};
@@ -80,6 +80,10 @@ pub struct InitialSession {
     pub http_enabled: bool,
     /// Whether this tab's root agent actually has `spawn_agent` attached.
     pub may_delegate: bool,
+    /// Skills discovered for this session's workspace root — the same list its
+    /// `ToolCtx::skills` was built from, so the SKILLS widget's catalog matches the `skill`
+    /// tool's own inventory exactly.
+    pub skills: Vec<SkillMetadata>,
 }
 
 /// A read-only detail popup (`M12-9`'s `Enter` on a focused panel row) — one flavor for
@@ -162,6 +166,7 @@ impl SessionTab {
         root: PathBuf,
         http_enabled: bool,
         may_delegate: bool,
+        skills: Vec<SkillMetadata>,
     ) -> Self {
         Self {
             id,
@@ -180,7 +185,7 @@ impl SessionTab {
             context_split: false,
             unread: false,
             needs_attention: false,
-            panel: Panel::default(),
+            panel: Panel::new(skills),
             roster: Roster::default(),
             panel_visible: true,
             panel_focus: None,
@@ -306,6 +311,7 @@ impl App {
                     s.root,
                     s.http_enabled,
                     s.may_delegate,
+                    s.skills,
                 )
             })
             .collect();
@@ -390,6 +396,7 @@ impl App {
                 network: &tab.panel.network,
                 documents: &tab.panel.documents,
                 network_turn_requests: tab.panel.turn_requests,
+                skills: &tab.panel.skills,
                 scroll: tab.scroll,
                 running_turn: tab.running_turn,
                 model: &tab.model,
@@ -697,6 +704,7 @@ impl App {
             PanelWidgetKind::Subagents => tab.roster.len().min(crate::roster::ROSTER_SHOWN),
             PanelWidgetKind::Network => tab.panel.network.len().min(6),
             PanelWidgetKind::Documents => tab.panel.documents.len().min(6),
+            PanelWidgetKind::Skills => tab.panel.skills.len().min(6),
             PanelWidgetKind::Model | PanelWidgetKind::Context => 0,
         }
     }
@@ -821,6 +829,21 @@ impl App {
                     ],
                 });
             }
+            PanelWidgetKind::Skills => {
+                let Some(row) = self.tabs[idx].panel.skills.get(focus.row) else {
+                    return;
+                };
+                self.tabs[idx].detail_modal = Some(DetailModal {
+                    title: format!("skill · {}", row.name),
+                    lines: vec![
+                        format!(
+                            "status: {}",
+                            if row.active { "active" } else { "not loaded" }
+                        ),
+                        format!("description: {}", row.description),
+                    ],
+                });
+            }
         }
     }
 
@@ -913,6 +936,7 @@ impl App {
         let http_enabled = self.defaults.http.enabled;
         let spec = session_factory::build_spec(&self.defaults, &root, title.clone(), http_enabled);
         let ctx = session_factory::build_tool_ctx(root.clone(), self.defaults.max_output_bytes);
+        let skills = ctx.skills.to_vec();
 
         match self.manager.spawn(&spec, ctx) {
             Ok(handle) => {
@@ -929,6 +953,7 @@ impl App {
                     root,
                     http_enabled,
                     may_delegate,
+                    skills,
                 ));
                 let new_idx = self.tabs.len() - 1;
                 self.switch_to(new_idx);
@@ -1114,6 +1139,7 @@ impl App {
 
         let spec = session_factory::build_spec(&defaults, &root, title.clone(), form.http_enabled);
         let ctx = session_factory::build_tool_ctx(root.clone(), defaults.max_output_bytes);
+        let skills = ctx.skills.to_vec();
 
         match self.manager.spawn(&spec, ctx) {
             Ok(handle) => {
@@ -1130,6 +1156,7 @@ impl App {
                     root,
                     form.http_enabled,
                     may_delegate,
+                    skills,
                 ));
                 let new_idx = self.tabs.len() - 1;
                 self.switch_to(new_idx);
@@ -1348,6 +1375,7 @@ mod tests {
                 subagent_model: None,
                 http_enabled: true,
                 may_delegate: false,
+                skills: Vec::new(),
             });
         }
         App::new(manager, events_rx, sessions, defaults(), HashMap::new())
