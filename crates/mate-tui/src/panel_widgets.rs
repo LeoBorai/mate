@@ -1,9 +1,11 @@
 //! The agent status panel's widget framework (§9.2/§9.6/§9.7/§9.8, `M12-1`): a vertical stack
 //! of [`PanelWidget`]s over one shared [`PanelView`], not a hardcoded layout. `AgentStatusPanel`
 //! registers the five widgets §9.2 lists plus `SkillsWidget` (discovered/active skills, a green
-//! `●` once loaded this session, an empty `○` otherwise), in order, and owns the vertical-budget
-//! allocation (`M12-3`) — `ModelWidget`/`ContextWidget` are fixed-height and always render in
-//! full; the four list widgets share the remainder, collapsing in reverse priority order
+//! `●` once loaded this session, an empty `○` otherwise) and `AgentsMdWidget` (a green `✓` once
+//! a project-instructions file — `AGENTS.md`, `CLAUDE.md`, ... — was discovered for this tab's
+//! workspace root, a dim `○` otherwise), in order, and owns the vertical-budget allocation
+//! (`M12-3`) — `ModelWidget`/`ContextWidget`/`AgentsMdWidget` are fixed-height and always render
+//! in full; the four list widgets share the remainder, collapsing in reverse priority order
 //! **skills, then documents, then network, then subagents** (§9.2: subagents are the liveness
 //! signal during delegation, so they're the last thing to lose room), except a focused widget
 //! (`M12-9`) always goes first regardless of its usual priority — "expands on focus" (§9.6).
@@ -45,6 +47,7 @@ const SKILLS_SHOWN: usize = 6;
 pub(crate) enum PanelWidgetKind {
     Model,
     Context,
+    AgentsMd,
     Subagents,
     Network,
     Documents,
@@ -52,9 +55,10 @@ pub(crate) enum PanelWidgetKind {
 }
 
 impl PanelWidgetKind {
-    const ORDER: [PanelWidgetKind; 6] = [
+    const ORDER: [PanelWidgetKind; 7] = [
         PanelWidgetKind::Model,
         PanelWidgetKind::Context,
+        PanelWidgetKind::AgentsMd,
         PanelWidgetKind::Subagents,
         PanelWidgetKind::Network,
         PanelWidgetKind::Documents,
@@ -71,9 +75,10 @@ impl PanelWidgetKind {
         Self::ORDER[(i + Self::ORDER.len() - 1) % Self::ORDER.len()]
     }
 
-    /// Whether this widget has row-level navigation and an `Enter`-opened detail — `Model` and
-    /// `Context` don't (§9.4/§9.5 have no rows to focus; `Context`'s own `Enter` toggles its
-    /// root/subagent split instead, handled directly in `crate::app`, not through a row).
+    /// Whether this widget has row-level navigation and an `Enter`-opened detail — `Model`,
+    /// `Context`, and `AgentsMd` don't (§9.4/§9.5 have no rows to focus; `Context`'s own `Enter`
+    /// toggles its root/subagent split instead, handled directly in `crate::app`, not through a
+    /// row; `AgentsMd` is a single fixed fact with nothing to open).
     pub(crate) fn is_list(self) -> bool {
         matches!(
             self,
@@ -115,6 +120,10 @@ pub(crate) struct PanelView<'a> {
     pub(crate) documents: &'a VecDeque<DocRow>,
     pub(crate) network_turn_requests: u32,
     pub(crate) skills: &'a [SkillRow],
+    /// The project-instructions file discovered for this session's workspace root
+    /// (`AGENTS.md`/`CLAUDE.md`/...), if any — just the filename; `AgentsMdWidget` only needs
+    /// to show a tick, not the content itself.
+    pub(crate) agents_md: Option<&'a str>,
     pub(crate) root: &'a Path,
     pub(crate) focus: Option<PanelFocus>,
 }
@@ -138,6 +147,7 @@ pub(crate) trait PanelWidget {
 
 struct ModelWidget;
 struct ContextWidget;
+struct AgentsMdWidget;
 struct SubagentRosterWidget;
 struct NetworkLogWidget;
 struct DocumentsLogWidget;
@@ -145,6 +155,7 @@ struct SkillsWidget;
 
 const MODEL_ROWS: u16 = 3;
 const CONTEXT_ROWS: u16 = 4;
+const AGENTS_MD_ROWS: u16 = 1;
 
 impl PanelWidget for ModelWidget {
     fn title(&self) -> &str {
@@ -271,6 +282,41 @@ impl PanelWidget for ContextWidget {
             ]
         };
         f.render_widget(Paragraph::new(lines), area);
+    }
+}
+
+impl PanelWidget for AgentsMdWidget {
+    fn title(&self) -> &str {
+        "PROJECT"
+    }
+
+    fn size(&self, _view: &PanelView<'_>) -> WidgetSize {
+        WidgetSize {
+            ideal: AGENTS_MD_ROWS,
+            min: AGENTS_MD_ROWS,
+        }
+    }
+
+    /// One line, always: the `PROJECT` label plus a green `✓` and whichever filename was
+    /// actually discovered (`AGENTS.md`, `CLAUDE.md`, ...) once its content has been folded
+    /// into the preamble, or a dim `○ no AGENTS.md` otherwise. Fixed-height like
+    /// `Model`/`Context` — a single session-start fact, not a growing list, so it never needs
+    /// to collapse or take focus rows.
+    fn render(&self, f: &mut Frame<'_>, area: Rect, view: &PanelView<'_>, _collapsed: bool) {
+        let (tick, color) = match view.agents_md {
+            Some(filename) => (format!("✓ {filename}"), Color::Green),
+            None => ("○ no AGENTS.md".to_string(), Color::DarkGray),
+        };
+        let line = Line::from(vec![
+            Span::styled(
+                format!("{} ", self.title()),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(tick, Style::default().fg(color)),
+        ]);
+        f.render_widget(Paragraph::new(vec![line]), area);
     }
 }
 
@@ -588,6 +634,7 @@ impl AgentStatusPanel {
             widgets: vec![
                 Box::new(ModelWidget),
                 Box::new(ContextWidget),
+                Box::new(AgentsMdWidget),
                 Box::new(SubagentRosterWidget),
                 Box::new(NetworkLogWidget),
                 Box::new(DocumentsLogWidget),
@@ -596,13 +643,13 @@ impl AgentStatusPanel {
         }
     }
 
-    /// Renders the full stack into `area` (§9.2/§9.3): `Model`/`Context` get their fixed rows
-    /// first, the remainder is allocated to the four list widgets in priority order — whichever
-    /// is focused first (if any), then subagents, network, documents, skills — each getting
-    /// `min(ideal, remaining)`, so a widget that can't fit its ideal still renders as many rows
-    /// as the leftover budget allows rather than jumping straight to its floor.
+    /// Renders the full stack into `area` (§9.2/§9.3): `Model`/`Context`/`AgentsMd` get their
+    /// fixed rows first, the remainder is allocated to the four list widgets in priority order —
+    /// whichever is focused first (if any), then subagents, network, documents, skills — each
+    /// getting `min(ideal, remaining)`, so a widget that can't fit its ideal still renders as
+    /// many rows as the leftover budget allows rather than jumping straight to its floor.
     pub(crate) fn render(&self, f: &mut Frame<'_>, area: Rect, view: &PanelView<'_>) {
-        let fixed_total = MODEL_ROWS + CONTEXT_ROWS;
+        let fixed_total = MODEL_ROWS + CONTEXT_ROWS + AGENTS_MD_ROWS;
         let fixed_height = fixed_total.min(area.height);
         let list_budget = area.height.saturating_sub(fixed_height);
 
@@ -623,12 +670,17 @@ impl AgentStatusPanel {
         let heights = allocate_list_heights(
             list_budget,
             order,
-            [&sizes[2], &sizes[3], &sizes[4], &sizes[5]],
+            [&sizes[3], &sizes[4], &sizes[5], &sizes[6]],
         );
 
+        let model_rows = MODEL_ROWS.min(area.height);
+        let context_rows = CONTEXT_ROWS.min(fixed_height.saturating_sub(model_rows));
+        let agents_md_rows =
+            AGENTS_MD_ROWS.min(fixed_height.saturating_sub(model_rows + context_rows));
         let constraints = [
-            Constraint::Length(MODEL_ROWS.min(area.height)),
-            Constraint::Length(CONTEXT_ROWS.min(fixed_height.saturating_sub(MODEL_ROWS))),
+            Constraint::Length(model_rows),
+            Constraint::Length(context_rows),
+            Constraint::Length(agents_md_rows),
             Constraint::Length(heights[0]),
             Constraint::Length(heights[1]),
             Constraint::Length(heights[2]),
@@ -673,15 +725,15 @@ mod tests {
     }
 
     #[test]
-    fn kind_cycles_forward_and_back_without_leaving_the_six_variants() {
+    fn kind_cycles_forward_and_back_without_leaving_the_seven_variants() {
         let mut k = PanelWidgetKind::Model;
-        for _ in 0..6 {
+        for _ in 0..7 {
             k = k.next();
         }
         assert_eq!(
             k,
             PanelWidgetKind::Model,
-            "six `next`s from Model must return to Model"
+            "seven `next`s from Model must return to Model"
         );
         assert_eq!(PanelWidgetKind::Model.prev(), PanelWidgetKind::Skills);
     }

@@ -65,6 +65,7 @@ pub async fn run(cli: &crate::cli::Cli, config: &Config) -> Result<(), MateError
             defaults.agents_md_max_bytes,
         );
         let skills = ctx.skills.to_vec();
+        let agents_md = ctx.agents_md.as_ref().map(|s| s.filename.to_string());
         let handle = manager
             .spawn(&spec, ctx)
             .map_err(|err| MateError::Other(anyhow::anyhow!(err)))?;
@@ -79,6 +80,7 @@ pub async fn run(cli: &crate::cli::Cli, config: &Config) -> Result<(), MateError
             http_enabled: defaults.http.enabled,
             may_delegate: defaults.delegation.enabled,
             skills,
+            agents_md,
         });
     }
 

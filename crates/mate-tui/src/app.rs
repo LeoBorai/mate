@@ -93,6 +93,9 @@ pub struct InitialSession {
     /// `ToolCtx::skills` was built from, so the SKILLS widget's catalog matches the `skill`
     /// tool's own inventory exactly.
     pub skills: Vec<SkillMetadata>,
+    /// The project-instructions filename discovered for this session's workspace root
+    /// (`AGENTS.md`, `CLAUDE.md`, ...), if any — the `PROJECT` widget's tick.
+    pub agents_md: Option<String>,
 }
 
 /// A read-only detail popup (`M12-9`'s `Enter` on a focused panel row) — one flavor for
@@ -161,6 +164,9 @@ struct SessionTab {
     /// toolset can diverge from the defaults it was spawned from.
     http_enabled: bool,
     may_delegate: bool,
+    /// The `PROJECT` widget's tick — set once at tab-open time from `ToolCtx::agents_md`, never
+    /// re-derived (the same "fixed for the tab's lifetime" treatment `skills`' catalog gets).
+    agents_md: Option<String>,
 }
 
 impl SessionTab {
@@ -176,6 +182,7 @@ impl SessionTab {
         http_enabled: bool,
         may_delegate: bool,
         skills: Vec<SkillMetadata>,
+        agents_md: Option<String>,
     ) -> Self {
         Self {
             id,
@@ -202,6 +209,7 @@ impl SessionTab {
             pending_approvals: VecDeque::new(),
             http_enabled,
             may_delegate,
+            agents_md,
         }
     }
 }
@@ -321,6 +329,7 @@ impl App {
                     s.http_enabled,
                     s.may_delegate,
                     s.skills,
+                    s.agents_md,
                 )
             })
             .collect();
@@ -406,6 +415,7 @@ impl App {
                 documents: &tab.panel.documents,
                 network_turn_requests: tab.panel.turn_requests,
                 skills: &tab.panel.skills,
+                agents_md: tab.agents_md.as_deref(),
                 scroll: &mut tab.scroll,
                 running_turn: tab.running_turn,
                 model: &tab.model,
@@ -714,7 +724,7 @@ impl App {
             PanelWidgetKind::Network => tab.panel.network.len().min(6),
             PanelWidgetKind::Documents => tab.panel.documents.len().min(6),
             PanelWidgetKind::Skills => tab.panel.skills.len().min(6),
-            PanelWidgetKind::Model | PanelWidgetKind::Context => 0,
+            PanelWidgetKind::Model | PanelWidgetKind::Context | PanelWidgetKind::AgentsMd => 0,
         }
     }
 
@@ -784,7 +794,7 @@ impl App {
     /// re-fetch.
     fn activate_panel_focus(&mut self, idx: usize, focus: PanelFocus) {
         match focus.widget {
-            PanelWidgetKind::Model => {}
+            PanelWidgetKind::Model | PanelWidgetKind::AgentsMd => {}
             PanelWidgetKind::Context => {
                 let split = &mut self.tabs[idx].context_split;
                 *split = !*split;
@@ -951,6 +961,7 @@ impl App {
             self.defaults.agents_md_max_bytes,
         );
         let skills = ctx.skills.to_vec();
+        let agents_md = ctx.agents_md.as_ref().map(|s| s.filename.to_string());
 
         match self.manager.spawn(&spec, ctx) {
             Ok(handle) => {
@@ -968,6 +979,7 @@ impl App {
                     http_enabled,
                     may_delegate,
                     skills,
+                    agents_md,
                 ));
                 let new_idx = self.tabs.len() - 1;
                 self.switch_to(new_idx);
@@ -1159,6 +1171,7 @@ impl App {
             defaults.agents_md_max_bytes,
         );
         let skills = ctx.skills.to_vec();
+        let agents_md = ctx.agents_md.as_ref().map(|s| s.filename.to_string());
 
         match self.manager.spawn(&spec, ctx) {
             Ok(handle) => {
@@ -1176,6 +1189,7 @@ impl App {
                     form.http_enabled,
                     may_delegate,
                     skills,
+                    agents_md,
                 ));
                 let new_idx = self.tabs.len() - 1;
                 self.switch_to(new_idx);
@@ -1430,6 +1444,7 @@ mod tests {
                 http_enabled: true,
                 may_delegate: false,
                 skills: Vec::new(),
+                agents_md: None,
             });
         }
         App::new(manager, events_rx, sessions, defaults(), HashMap::new())
