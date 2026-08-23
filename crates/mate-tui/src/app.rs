@@ -406,7 +406,7 @@ impl App {
                 documents: &tab.panel.documents,
                 network_turn_requests: tab.panel.turn_requests,
                 skills: &tab.panel.skills,
-                scroll: tab.scroll,
+                scroll: &mut tab.scroll,
                 running_turn: tab.running_turn,
                 model: &tab.model,
                 provider: &tab.provider,
