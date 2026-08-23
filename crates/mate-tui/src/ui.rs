@@ -59,7 +59,11 @@ pub(crate) struct View<'a> {
     pub(crate) transcript: &'a Transcript,
     pub(crate) wrap: &'a mut WrapCache,
     pub(crate) input: &'a InputBox,
-    pub(crate) scroll: usize,
+    /// Lines scrolled up from the bottom (`M7-1` follow-up) — a `&mut` back into the owning
+    /// tab so `render_transcript` can clamp a stale, over-incremented value (mouse wheel held
+    /// past the top of the transcript) down to what's actually scrollable, and have that
+    /// clamp stick for the next frame instead of re-derailing every draw.
+    pub(crate) scroll: &'a mut usize,
     pub(crate) running_turn: bool,
     pub(crate) model: &'a str,
     pub(crate) provider: &'a str,
@@ -591,7 +595,8 @@ fn render_input(f: &mut Frame<'_>, area: Rect, view: &View<'_>) {
 
 fn render_transcript(f: &mut Frame<'_>, area: Rect, view: &mut View<'_>) {
     let width = area.width.saturating_sub(PREFIX_WIDTH + 1);
-    let need = area.height as usize + view.scroll;
+    let requested = *view.scroll;
+    let need = area.height as usize + requested;
 
     let mut lines: Vec<Line<'static>> = Vec::new();
     for entry in view.transcript.iter().rev() {
@@ -609,7 +614,20 @@ fn render_transcript(f: &mut Frame<'_>, area: Rect, view: &mut View<'_>) {
     }
     lines.reverse();
 
-    let take = lines.len().saturating_sub(view.scroll);
+    // `lines.len() < need` only once the loop above has walked the whole transcript and still
+    // came up short of `need` — that's the one point the *actual* top is known, so it's the
+    // one point a ceiling on `scroll` can be computed. Short of that there's still more
+    // transcript above, so the requested scroll stands. Clamping and writing back here (not
+    // just clamping `take` below) is what makes a wheel held past the top converge in one
+    // frame instead of needing as many scroll-down notches as it overshot by.
+    let scroll = if lines.len() < need {
+        requested.min(lines.len().saturating_sub(area.height as usize))
+    } else {
+        requested
+    };
+    *view.scroll = scroll;
+
+    let take = lines.len().saturating_sub(scroll);
     let visible = &lines[..take];
     let start = visible.len().saturating_sub(area.height as usize);
 

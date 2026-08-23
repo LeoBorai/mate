@@ -31,9 +31,13 @@
 //! returns focus to the input and is inserted there — there is no code path that routes text
 //! into a subagent (§7.6).
 
+use std::io;
 use std::path::PathBuf;
 
-use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers, MouseEvent, MouseEventKind,
+};
 use futures::StreamExt;
 use mate_core::cost::{ModelRate, estimate_cost};
 use mate_core::session::{SessionCmd, SessionEvent, SessionHandle, SessionId, SessionManager};
@@ -55,6 +59,11 @@ use crate::ui::{self, AppView};
 use crate::wrap::WrapCache;
 
 const TICK: Duration = Duration::from_millis(33);
+
+/// Lines the transcript scrolls per mouse wheel notch — matches the step most terminals use for
+/// a keyboard `PageUp`/`PageDown`-style nudge rather than a single line, so a wheel click feels
+/// like it actually moved something.
+const SCROLL_STEP: usize = 3;
 
 #[derive(Debug, thiserror::Error)]
 pub enum TuiError {
@@ -397,7 +406,7 @@ impl App {
                 documents: &tab.panel.documents,
                 network_turn_requests: tab.panel.turn_requests,
                 skills: &tab.panel.skills,
-                scroll: tab.scroll,
+                scroll: &mut tab.scroll,
                 running_turn: tab.running_turn,
                 model: &tab.model,
                 provider: &tab.provider,
@@ -1221,7 +1230,37 @@ impl App {
     async fn on_term_event(&mut self, event: Event) {
         match event {
             Event::Key(key) => self.on_key(key).await,
+            Event::Mouse(mouse) => self.on_mouse(mouse),
             Event::Resize(_, _) => self.dirty = true,
+            _ => {}
+        }
+    }
+
+    /// Routes the wheel to the active tab's transcript scroll — not the input box (`M7-1`
+    /// follow-up: without this, mouse wheel events fall through to `InputBox`'s `Up`/`Down`
+    /// history recall instead, since a terminal with mouse reporting off emulates wheel motion
+    /// as arrow keys). Ignored while a modal surface (spawn form, detail modal, approval, panel
+    /// focus) has input focus, matching how `on_key` gates those same cases.
+    fn on_mouse(&mut self, mouse: MouseEvent) {
+        if self.tabs.is_empty() || self.spawn_form.is_some() {
+            return;
+        }
+        let tab = &mut self.tabs[self.active];
+        let modal_has_focus = tab.detail_modal.is_some()
+            || tab.panel_focus.is_some()
+            || !tab.pending_approvals.is_empty();
+        if modal_has_focus {
+            return;
+        }
+        match mouse.kind {
+            MouseEventKind::ScrollUp => {
+                tab.scroll = tab.scroll.saturating_add(SCROLL_STEP);
+                self.dirty = true;
+            }
+            MouseEventKind::ScrollDown => {
+                tab.scroll = tab.scroll.saturating_sub(SCROLL_STEP);
+                self.dirty = true;
+            }
             _ => {}
         }
     }
@@ -1242,8 +1281,10 @@ pub async fn run(
         return Ok(());
     }
     let mut terminal = ratatui::try_init()?;
+    crossterm::execute!(io::stdout(), EnableMouseCapture)?;
     let mut app = App::new(manager, events, sessions, defaults, pricing);
     let result = run_loop(&mut app, &mut terminal).await;
+    let _ = crossterm::execute!(io::stdout(), DisableMouseCapture);
     ratatui::restore();
     for tab in &app.tabs {
         let _ = tab.handle.send(SessionCmd::Shutdown).await;
@@ -1379,6 +1420,56 @@ mod tests {
             });
         }
         App::new(manager, events_rx, sessions, defaults(), HashMap::new())
+    }
+
+    fn scroll(kind: MouseEventKind) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    #[tokio::test]
+    async fn mouse_wheel_scrolls_the_transcript_not_the_input() {
+        let mut app = test_app(1);
+
+        app.on_mouse(scroll(MouseEventKind::ScrollUp));
+
+        assert_eq!(
+            app.tabs[0].scroll, SCROLL_STEP,
+            "wheel-up should move the transcript scroll offset, not fall through to the input box"
+        );
+        assert!(
+            app.tabs[0].input.is_empty(),
+            "wheel scroll must not touch the input box's draft"
+        );
+    }
+
+    #[tokio::test]
+    async fn mouse_wheel_down_does_not_underflow_past_the_bottom() {
+        let mut app = test_app(1);
+
+        app.on_mouse(scroll(MouseEventKind::ScrollDown));
+
+        assert_eq!(
+            app.tabs[0].scroll, 0,
+            "scrolling down from the bottom saturates at 0 rather than wrapping"
+        );
+    }
+
+    #[tokio::test]
+    async fn mouse_wheel_is_ignored_while_the_spawn_form_is_open() {
+        let mut app = test_app(1);
+        app.spawn_form = Some(SpawnForm::new());
+
+        app.on_mouse(scroll(MouseEventKind::ScrollUp));
+
+        assert_eq!(
+            app.tabs[0].scroll, 0,
+            "a modal overlay owns input focus, so the wheel must not reach the transcript underneath"
+        );
     }
 
     #[tokio::test]
