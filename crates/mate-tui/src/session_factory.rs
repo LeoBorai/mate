@@ -9,8 +9,10 @@
 
 use std::path::{Path, PathBuf};
 
+use std::sync::Arc;
+
 use mate_core::config::{AgentSpec, DelegationPolicy, HttpPolicy, SessionSpec};
-use mate_core::preamble::{PreambleRole, render_preamble};
+use mate_core::preamble::{PreambleRole, SkillDescriptor, render_preamble};
 use mate_core::toolset::tool_descriptors;
 use mate_tool_api::{AgentId, ToolCtx};
 use tokio_util::sync::CancellationToken;
@@ -63,11 +65,21 @@ pub fn build_spec(
     let mut http = defaults.http.clone();
     http.enabled = http_enabled;
 
+    let skills = mate_tool_skills::discover_skills(root);
+    let skill_descriptors: Vec<SkillDescriptor> = skills
+        .iter()
+        .map(|s| SkillDescriptor::new(s.name.clone(), s.description.clone()))
+        .collect();
     let preamble = render_preamble(
         PreambleRole::Root,
         root,
         std::env::consts::OS,
-        &tool_descriptors(defaults.delegation.enabled, http_enabled),
+        &tool_descriptors(
+            defaults.delegation.enabled,
+            http_enabled,
+            !skills.is_empty(),
+        ),
+        &skill_descriptors,
     );
 
     let agent = AgentSpec {
@@ -98,6 +110,7 @@ pub fn build_spec(
 /// this one is just a placeholder that's never actually read from.
 pub fn build_tool_ctx(root: PathBuf, max_output_bytes: usize) -> ToolCtx {
     let (activity, _activity_rx) = tokio::sync::mpsc::channel(64);
+    let skills = mate_tool_skills::discover_skills(&root);
     ToolCtx {
         agent: AgentId::ROOT,
         root,
@@ -106,6 +119,7 @@ pub fn build_tool_ctx(root: PathBuf, max_output_bytes: usize) -> ToolCtx {
         activity,
         cancel: CancellationToken::new(),
         approvals: None,
+        skills: Arc::from(skills),
     }
 }
 

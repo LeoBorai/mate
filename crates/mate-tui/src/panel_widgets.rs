@@ -1,11 +1,12 @@
 //! The agent status panel's widget framework (§9.2/§9.6/§9.7/§9.8, `M12-1`): a vertical stack
 //! of [`PanelWidget`]s over one shared [`PanelView`], not a hardcoded layout. `AgentStatusPanel`
-//! registers the five widgets §9.2 lists, in order, and owns the vertical-budget allocation
-//! (`M12-3`) — `ModelWidget`/`ContextWidget` are fixed-height and always render in full; the
-//! three list widgets share the remainder, collapsing in reverse priority order **documents,
-//! then network, then subagents** (§9.2: subagents are the liveness signal during delegation,
-//! so they're the last thing to lose room), except a focused widget (`M12-9`) always goes first
-//! regardless of its usual priority — "expands on focus" (§9.6).
+//! registers the five widgets §9.2 lists plus `SkillsWidget` (discovered/active skills, a green
+//! `●` once loaded this session, an empty `○` otherwise), in order, and owns the vertical-budget
+//! allocation (`M12-3`) — `ModelWidget`/`ContextWidget` are fixed-height and always render in
+//! full; the four list widgets share the remainder, collapsing in reverse priority order
+//! **skills, then documents, then network, then subagents** (§9.2: subagents are the liveness
+//! signal during delegation, so they're the last thing to lose room), except a focused widget
+//! (`M12-9`) always goes first regardless of its usual priority — "expands on focus" (§9.6).
 //!
 //! Every widget here is a stateless unit struct — the state it renders lives entirely on
 //! [`crate::app::SessionTab`] (§9.1: "no panel data on `App`"), reached through the borrowed
@@ -24,17 +25,20 @@ use mate_core::cost::CostEstimate;
 use mate_core::streaming::UsageRollup;
 use mate_tool_api::{AgentId, FileOp};
 
-use crate::panel::{DocRow, NetRow};
+use crate::panel::{DocRow, NetRow, SkillRow};
 use crate::roster::{ROSTER_SHOWN, SubagentRow, SubagentStatus};
 use crate::text::{middle_truncate, truncate_end, truncate_left};
 
-/// Rows of the network/documents logs actually drawn beyond the header (§9.7/§9.8) — the ring
-/// buffers themselves hold up to 50; only the newest few are worth screen space.
+/// Rows of the network/documents/skills lists actually drawn beyond the header (§9.7/§9.8) —
+/// the network/documents ring buffers themselves hold up to 50; only the newest few are worth
+/// screen space. `SKILLS_SHOWN` bounds the same way even though the skill catalog is fixed
+/// rather than a ring — a workspace with dozens of skills shouldn't blow the panel's budget.
 const NETWORK_SHOWN: usize = 6;
 const DOCUMENTS_SHOWN: usize = 6;
+const SKILLS_SHOWN: usize = 6;
 
 /// Which panel widget has focus (`M12-9`) — `Tab`/`Shift+Tab` cycles this, `↑`/`↓` moves
-/// [`PanelFocus::row`] within whichever of the three list widgets is focused. Lives on
+/// [`PanelFocus::row`] within whichever of the four list widgets is focused. Lives on
 /// `SessionTab`, not here — this enum is just the shared vocabulary `crate::app` and this
 /// module both need.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,15 +48,17 @@ pub(crate) enum PanelWidgetKind {
     Subagents,
     Network,
     Documents,
+    Skills,
 }
 
 impl PanelWidgetKind {
-    const ORDER: [PanelWidgetKind; 5] = [
+    const ORDER: [PanelWidgetKind; 6] = [
         PanelWidgetKind::Model,
         PanelWidgetKind::Context,
         PanelWidgetKind::Subagents,
         PanelWidgetKind::Network,
         PanelWidgetKind::Documents,
+        PanelWidgetKind::Skills,
     ];
 
     pub(crate) fn next(self) -> Self {
@@ -71,7 +77,10 @@ impl PanelWidgetKind {
     pub(crate) fn is_list(self) -> bool {
         matches!(
             self,
-            PanelWidgetKind::Subagents | PanelWidgetKind::Network | PanelWidgetKind::Documents
+            PanelWidgetKind::Subagents
+                | PanelWidgetKind::Network
+                | PanelWidgetKind::Documents
+                | PanelWidgetKind::Skills
         )
     }
 }
@@ -105,6 +114,7 @@ pub(crate) struct PanelView<'a> {
     pub(crate) network: &'a VecDeque<NetRow>,
     pub(crate) documents: &'a VecDeque<DocRow>,
     pub(crate) network_turn_requests: u32,
+    pub(crate) skills: &'a [SkillRow],
     pub(crate) root: &'a Path,
     pub(crate) focus: Option<PanelFocus>,
 }
@@ -131,6 +141,7 @@ struct ContextWidget;
 struct SubagentRosterWidget;
 struct NetworkLogWidget;
 struct DocumentsLogWidget;
+struct SkillsWidget;
 
 const MODEL_ROWS: u16 = 3;
 const CONTEXT_ROWS: u16 = 4;
@@ -380,6 +391,61 @@ impl PanelWidget for DocumentsLogWidget {
     }
 }
 
+impl PanelWidget for SkillsWidget {
+    fn title(&self) -> &str {
+        "SKILLS"
+    }
+
+    fn size(&self, view: &PanelView<'_>) -> WidgetSize {
+        let n = view.skills.len().min(SKILLS_SHOWN);
+        WidgetSize {
+            ideal: 1 + n as u16,
+            min: 1,
+        }
+    }
+
+    /// The skills catalog discovered under `.claude/skills`/`.opencode/skills`/
+    /// `.copilot/skills`/`.agents/skills`, one row per skill — a green `●` once
+    /// this session has actually loaded it (`ToolActivity::SkillLoaded`, folded in
+    /// `crate::panel::Panel::push`), an empty `○` otherwise. Header count is
+    /// `active/total`, the same "how many of these are live" shape `SUBAGENTS`'s
+    /// `running/total` already uses.
+    fn render(&self, f: &mut Frame<'_>, area: Rect, view: &PanelView<'_>, collapsed: bool) {
+        let active = view.skills.iter().filter(|s| s.active).count();
+        let header = format!("{}  {active}/{}", self.title(), view.skills.len());
+        let mut lines = vec![panel_header_marker(&header, collapsed)];
+        let shown = area.height.saturating_sub(1) as usize;
+        let focused_row = view.row_focus(PanelWidgetKind::Skills);
+        for (i, row) in view.skills.iter().take(shown).enumerate() {
+            lines.push(skill_row_line(row, area.width, Some(i) == focused_row));
+        }
+        f.render_widget(Paragraph::new(lines), area);
+    }
+}
+
+/// `● pdf-processing` once loaded this session, `○ pdf-processing` until then — a filled dot is
+/// the "currently relevant to this conversation" state, not "currently running" (loading a
+/// skill's instructions has no meaningful duration to show).
+fn skill_row_line(row: &SkillRow, width: u16, focused: bool) -> Line<'static> {
+    let dot = if row.active { "●" } else { "○" };
+    let mut dot_style = Style::default().fg(if row.active {
+        Color::Green
+    } else {
+        Color::DarkGray
+    });
+    let mut name_style = Style::default();
+    if focused {
+        dot_style = dot_style.add_modifier(Modifier::REVERSED);
+        name_style = name_style.add_modifier(Modifier::REVERSED);
+    }
+    let budget = (width as usize).saturating_sub(2).max(1);
+    let name = truncate_end(&row.name, budget);
+    Line::from(vec![
+        Span::styled(format!("{dot} "), dot_style),
+        Span::styled(name, name_style),
+    ])
+}
+
 fn panel_header(text: &str) -> Line<'static> {
     Line::from(Span::styled(
         text.to_string(),
@@ -470,28 +536,30 @@ fn subagent_prefix(agent: AgentId) -> String {
 }
 
 /// The vertical-budget allocator (`M12-3`), split out from [`AgentStatusPanel::render`] so it's
-/// unit-testable without a `Frame`. `sizes` is `[subagents, network, documents]` regardless of
-/// `order` — the result is returned in that same fixed `[subagents, network, documents]`
-/// shape, so the caller never has to un-permute it.
+/// unit-testable without a `Frame`. `sizes` is `[subagents, network, documents, skills]`
+/// regardless of `order` — the result is returned in that same fixed shape, so the caller never
+/// has to un-permute it.
 ///
 /// Two passes, both walking `order`: first every widget's floor (`min`), so a higher-priority
 /// widget's floor is guaranteed before a lower one gets anything at all; then whatever's left
 /// grows each widget toward its `ideal`, same order — so `subagents` (or the focused widget,
-/// rotated to the front of `order`) is first to reclaim the room `documents`/`network`
-/// collapsing frees up (§9.2's "documents, then network, then subagents" collapse order).
+/// rotated to the front of `order`) is first to reclaim the room `skills`/`documents`/`network`
+/// collapsing frees up (§9.2's "documents, then network, then subagents" collapse order, with
+/// `skills` the newest and lowest-priority addition, collapsing before documents).
 fn allocate_list_heights(
     list_budget: u16,
-    order: [PanelWidgetKind; 3],
-    sizes: [&WidgetSize; 3],
-) -> [u16; 3] {
+    order: [PanelWidgetKind; 4],
+    sizes: [&WidgetSize; 4],
+) -> [u16; 4] {
     let idx = |kind: PanelWidgetKind| match kind {
         PanelWidgetKind::Subagents => 0,
         PanelWidgetKind::Network => 1,
         PanelWidgetKind::Documents => 2,
+        PanelWidgetKind::Skills => 3,
         _ => unreachable!("only list widgets appear in `order`"),
     };
 
-    let mut heights = [0u16; 3];
+    let mut heights = [0u16; 4];
     let mut remaining = list_budget;
     for kind in order {
         let i = idx(kind);
@@ -523,13 +591,14 @@ impl AgentStatusPanel {
                 Box::new(SubagentRosterWidget),
                 Box::new(NetworkLogWidget),
                 Box::new(DocumentsLogWidget),
+                Box::new(SkillsWidget),
             ],
         }
     }
 
     /// Renders the full stack into `area` (§9.2/§9.3): `Model`/`Context` get their fixed rows
-    /// first, the remainder is allocated to the three list widgets in priority order — whichever
-    /// is focused first (if any), then subagents, network, documents — each getting
+    /// first, the remainder is allocated to the four list widgets in priority order — whichever
+    /// is focused first (if any), then subagents, network, documents, skills — each getting
     /// `min(ideal, remaining)`, so a widget that can't fit its ideal still renders as many rows
     /// as the leftover budget allows rather than jumping straight to its floor.
     pub(crate) fn render(&self, f: &mut Frame<'_>, area: Rect, view: &PanelView<'_>) {
@@ -543,6 +612,7 @@ impl AgentStatusPanel {
             PanelWidgetKind::Subagents,
             PanelWidgetKind::Network,
             PanelWidgetKind::Documents,
+            PanelWidgetKind::Skills,
         ];
         if let Some(focus) = view.focus
             && let Some(pos) = order.iter().position(|k| *k == focus.widget)
@@ -550,7 +620,11 @@ impl AgentStatusPanel {
             order[..=pos].rotate_right(1);
         }
 
-        let heights = allocate_list_heights(list_budget, order, [&sizes[2], &sizes[3], &sizes[4]]);
+        let heights = allocate_list_heights(
+            list_budget,
+            order,
+            [&sizes[2], &sizes[3], &sizes[4], &sizes[5]],
+        );
 
         let constraints = [
             Constraint::Length(MODEL_ROWS.min(area.height)),
@@ -558,6 +632,7 @@ impl AgentStatusPanel {
             Constraint::Length(heights[0]),
             Constraint::Length(heights[1]),
             Constraint::Length(heights[2]),
+            Constraint::Length(heights[3]),
         ];
         let areas = Layout::vertical(constraints).split(area);
 
@@ -598,17 +673,17 @@ mod tests {
     }
 
     #[test]
-    fn kind_cycles_forward_and_back_without_leaving_the_five_variants() {
+    fn kind_cycles_forward_and_back_without_leaving_the_six_variants() {
         let mut k = PanelWidgetKind::Model;
-        for _ in 0..5 {
+        for _ in 0..6 {
             k = k.next();
         }
         assert_eq!(
             k,
             PanelWidgetKind::Model,
-            "five `next`s from Model must return to Model"
+            "six `next`s from Model must return to Model"
         );
-        assert_eq!(PanelWidgetKind::Model.prev(), PanelWidgetKind::Documents);
+        assert_eq!(PanelWidgetKind::Model.prev(), PanelWidgetKind::Skills);
     }
 
     #[test]
@@ -618,10 +693,11 @@ mod tests {
         assert_eq!(format_tokens(2_000_000), "2.0m");
     }
 
-    const DEFAULT_ORDER: [PanelWidgetKind; 3] = [
+    const DEFAULT_ORDER: [PanelWidgetKind; 4] = [
         PanelWidgetKind::Subagents,
         PanelWidgetKind::Network,
         PanelWidgetKind::Documents,
+        PanelWidgetKind::Skills,
     ];
 
     #[test]
@@ -629,21 +705,31 @@ mod tests {
         let subagents = WidgetSize { ideal: 4, min: 2 };
         let network = WidgetSize { ideal: 6, min: 1 };
         let documents = WidgetSize { ideal: 6, min: 1 };
-        let heights = allocate_list_heights(30, DEFAULT_ORDER, [&subagents, &network, &documents]);
+        let skills = WidgetSize { ideal: 3, min: 1 };
+        let heights = allocate_list_heights(
+            30,
+            DEFAULT_ORDER,
+            [&subagents, &network, &documents, &skills],
+        );
         assert_eq!(
             heights,
-            [4, 6, 6],
+            [4, 6, 6, 3],
             "M12-3: at 40 total rows everything must render in full"
         );
     }
 
     #[test]
     fn subagents_still_render_when_the_budget_is_tight() {
-        // 20-row panel, 7 rows already spent on Model+Context — 13 left for the three lists.
+        // 20-row panel, 7 rows already spent on Model+Context — 13 left for the four lists.
         let subagents = WidgetSize { ideal: 9, min: 2 };
         let network = WidgetSize { ideal: 7, min: 1 };
         let documents = WidgetSize { ideal: 7, min: 1 };
-        let heights = allocate_list_heights(13, DEFAULT_ORDER, [&subagents, &network, &documents]);
+        let skills = WidgetSize { ideal: 3, min: 1 };
+        let heights = allocate_list_heights(
+            13,
+            DEFAULT_ORDER,
+            [&subagents, &network, &documents, &skills],
+        );
         assert!(
             heights[0] >= subagents.min,
             "M12-3: at 20 total rows the subagent roster must still render, never collapse to 0"
@@ -651,15 +737,20 @@ mod tests {
     }
 
     #[test]
-    fn documents_collapses_before_network_and_network_before_subagents() {
+    fn skills_collapses_before_documents_before_network_before_subagents() {
         let subagents = WidgetSize { ideal: 9, min: 2 };
         let network = WidgetSize { ideal: 7, min: 1 };
         let documents = WidgetSize { ideal: 7, min: 1 };
+        let skills = WidgetSize { ideal: 3, min: 1 };
         // Only enough room for the highest-priority widget's own floor.
-        let heights = allocate_list_heights(2, DEFAULT_ORDER, [&subagents, &network, &documents]);
+        let heights = allocate_list_heights(
+            2,
+            DEFAULT_ORDER,
+            [&subagents, &network, &documents, &skills],
+        );
         assert_eq!(
             heights,
-            [2, 0, 0],
+            [2, 0, 0, 0],
             "subagents (highest priority) must be the only one to get anything"
         );
     }
@@ -669,17 +760,19 @@ mod tests {
         let subagents = WidgetSize { ideal: 9, min: 2 };
         let network = WidgetSize { ideal: 7, min: 1 };
         let documents = WidgetSize { ideal: 7, min: 1 };
+        let skills = WidgetSize { ideal: 3, min: 1 };
         let order = [
             PanelWidgetKind::Documents,
             PanelWidgetKind::Subagents,
             PanelWidgetKind::Network,
+            PanelWidgetKind::Skills,
         ];
         // One row available — normally subagents' floor would claim it; a focused Documents
         // must claim it instead.
-        let heights = allocate_list_heights(1, order, [&subagents, &network, &documents]);
+        let heights = allocate_list_heights(1, order, [&subagents, &network, &documents, &skills]);
         assert_eq!(
             heights,
-            [0, 0, 1],
+            [0, 0, 1, 0],
             "whichever kind leads `order` must be the one that wins the scarce budget"
         );
     }

@@ -176,6 +176,7 @@ fn derive_activity(activity: &ToolActivity) -> String {
             ..
         } => format!("blocked {host}"),
         ToolActivity::Note { text } => text.clone(),
+        ToolActivity::SkillLoaded { name } => format!("loaded skill {name}"),
     };
     truncate_end(&text, ACTIVITY_CHARS)
 }

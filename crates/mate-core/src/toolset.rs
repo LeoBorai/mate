@@ -49,6 +49,9 @@ pub fn build_toolset(
             allow_localhost,
         ));
     }
+    if !ctx.skills.is_empty() {
+        builder = builder.tool(mate_tool_skills::Skill::new(ctx.clone()));
+    }
     if ctx.spawner.is_some() {
         builder = builder.tool(mate_tool_agent::SpawnAgent::new(ctx));
     }
@@ -62,7 +65,11 @@ pub fn build_toolset(
 /// way a caller already threads one `may_delegate` value into both `AgentSpec::may_delegate` and
 /// this function (`crate::subagent` does the same for a subagent's own preamble and its own
 /// narrowed `http.enabled`).
-pub fn tool_descriptors(may_delegate: bool, http_enabled: bool) -> Vec<ToolDescriptor> {
+pub fn tool_descriptors(
+    may_delegate: bool,
+    http_enabled: bool,
+    skills_enabled: bool,
+) -> Vec<ToolDescriptor> {
     let mut descriptors = vec![
         ToolDescriptor::new(
             "read_file",
@@ -91,6 +98,14 @@ pub fn tool_descriptors(may_delegate: bool, http_enabled: bool) -> Vec<ToolDescr
              type, and redirect count.",
         ));
     }
+    if skills_enabled {
+        descriptors.push(ToolDescriptor::new(
+            "skill",
+            "Load the full instructions for a skill named in the \"Available skills\" list. \
+             Returns the skill's own directory (read any file it bundles with \
+             read_file/find_files) followed by its complete instructions.",
+        ));
+    }
     if may_delegate {
         descriptors.push(ToolDescriptor::new(
             "spawn_agent",
@@ -109,10 +124,16 @@ mod tests {
     use std::sync::Arc;
 
     use async_trait::async_trait;
-    use mate_tool_api::{SubagentReport, SubagentRequest, SubagentSpawner, ToolFailure};
+    use mate_tool_api::{
+        SkillMetadata, SubagentReport, SubagentRequest, SubagentSpawner, ToolFailure,
+    };
     use tokio_util::sync::CancellationToken;
 
     fn ctx(root: std::path::PathBuf) -> ToolCtx {
+        ctx_with_skills(root, Vec::new())
+    }
+
+    fn ctx_with_skills(root: std::path::PathBuf, skills: Vec<SkillMetadata>) -> ToolCtx {
         let (activity, _rx) = tokio::sync::mpsc::channel(8);
         ToolCtx {
             agent: mate_tool_api::AgentId::ROOT,
@@ -122,6 +143,15 @@ mod tests {
             activity,
             cancel: CancellationToken::new(),
             approvals: None,
+            skills: Arc::from(skills),
+        }
+    }
+
+    fn a_skill() -> SkillMetadata {
+        SkillMetadata {
+            name: "demo".to_string(),
+            description: "A demo skill.".to_string(),
+            dir: std::path::PathBuf::from(".claude/skills/demo"),
         }
     }
 
@@ -222,22 +252,47 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn attaches_skill_when_the_context_carries_discovered_skills() {
+        let tmp = tempfile::tempdir().unwrap();
+        let handle = build_toolset(
+            ctx_with_skills(tmp.path().to_path_buf(), vec![a_skill()]),
+            &http_policy(false),
+            http_shared(),
+        );
+
+        let mut names: Vec<String> = handle
+            .get_tool_defs(None)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|def| def.name)
+            .collect();
+        names.sort();
+
+        assert_eq!(
+            names,
+            vec!["find_files", "list_dir", "read_file", "skill"],
+            "skill must attach whenever ctx.skills is non-empty"
+        );
+    }
+
     #[test]
-    fn tool_descriptors_match_the_attached_toolset_without_delegation_or_http() {
-        let descriptors = tool_descriptors(false, false);
+    fn tool_descriptors_match_the_attached_toolset_without_delegation_http_or_skills() {
+        let descriptors = tool_descriptors(false, false, false);
         let mut names: Vec<&str> = descriptors.iter().map(|t| t.name.as_str()).collect();
         names.sort();
         assert_eq!(
             names,
             vec!["find_files", "list_dir", "read_file"],
             "descriptors must match build_toolset's own attachment set for may_delegate: false, \
-             http_enabled: false"
+             http_enabled: false, skills_enabled: false"
         );
     }
 
     #[test]
     fn tool_descriptors_include_http_request_when_enabled() {
-        let descriptors = tool_descriptors(false, true);
+        let descriptors = tool_descriptors(false, true, false);
         let mut names: Vec<&str> = descriptors.iter().map(|t| t.name.as_str()).collect();
         names.sort();
         assert_eq!(
@@ -247,8 +302,16 @@ mod tests {
     }
 
     #[test]
+    fn tool_descriptors_include_skill_when_skills_are_enabled() {
+        let descriptors = tool_descriptors(false, false, true);
+        let mut names: Vec<&str> = descriptors.iter().map(|t| t.name.as_str()).collect();
+        names.sort();
+        assert_eq!(names, vec!["find_files", "list_dir", "read_file", "skill"]);
+    }
+
+    #[test]
     fn tool_descriptors_include_spawn_agent_when_delegation_is_enabled() {
-        let descriptors = tool_descriptors(true, true);
+        let descriptors = tool_descriptors(true, true, false);
         let mut names: Vec<&str> = descriptors.iter().map(|t| t.name.as_str()).collect();
         names.sort();
         assert_eq!(
@@ -261,7 +324,7 @@ mod tests {
                 "spawn_agent"
             ],
             "descriptors must match build_toolset's own attachment set for may_delegate: true, \
-             http_enabled: true"
+             http_enabled: true, skills_enabled: false"
         );
     }
 }

@@ -17,7 +17,7 @@ use std::sync::Arc;
 use mate_core::agent::{BuiltAgent, build_agent};
 use mate_core::backend::Backend;
 use mate_core::config::AgentSpec;
-use mate_core::preamble::{PreambleRole, render_preamble};
+use mate_core::preamble::{PreambleRole, SkillDescriptor, render_preamble};
 use mate_core::provider_error::ProviderError;
 use mate_core::streaming::{AgentEvent, AgentEventEnvelope};
 use mate_core::toolset::tool_descriptors;
@@ -60,6 +60,11 @@ pub async fn run(cli: &Cli, config: &Config) -> Result<(), MateError> {
         HttpShared::new(config.http.rate_limit_per_host_per_min)
             .map_err(|err| MateError::Other(anyhow::anyhow!(err)))?,
     );
+    let skills = mate_tool_skills::discover_skills(&workspace_root);
+    let skill_descriptors: Vec<SkillDescriptor> = skills
+        .iter()
+        .map(|s| SkillDescriptor::new(s.name.clone(), s.description.clone()))
+        .collect();
     // Always `false`: this frontend never routes through `mate_core::session::SessionManager`
     // (see this module's doc comment), so there's no `SubagentSpawner` to give `ctx.spawner`
     // below — advertising `spawn_agent` here would tell the model about a tool
@@ -68,7 +73,8 @@ pub async fn run(cli: &Cli, config: &Config) -> Result<(), MateError> {
         PreambleRole::Root,
         &workspace_root,
         std::env::consts::OS,
-        &tool_descriptors(false, config.http.enabled),
+        &tool_descriptors(false, config.http.enabled, !skills.is_empty()),
+        &skill_descriptors,
     );
 
     let spec = AgentSpec {
@@ -96,6 +102,7 @@ pub async fn run(cli: &Cli, config: &Config) -> Result<(), MateError> {
         activity,
         cancel: cancel.clone(),
         approvals: None,
+        skills: Arc::from(skills),
     };
     let agent = build_agent(&backend, &http, &spec, ctx);
 

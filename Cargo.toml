@@ -49,4 +49,5 @@ mate-tool-agent = { path = "crates/mate-tool-agent" }
 mate-tool-api = { path = "crates/mate-tool-api" }
 mate-tool-fs = { path = "crates/mate-tool-fs" }
 mate-tool-http = { path = "crates/mate-tool-http" }
+mate-tool-skills = { path = "crates/mate-tool-skills" }
 mate-tui = { path = "crates/mate-tui" }

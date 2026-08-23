@@ -262,6 +262,7 @@ impl SessionManager {
                 approvals.clone() as Arc<dyn mate_tool_api::Approvals>,
                 ctx.root.clone(),
                 ctx.max_output_bytes,
+                ctx.skills.clone(),
                 &spec.agent,
             ));
             ctx.spawner = Some(runner.clone() as Arc<dyn mate_tool_api::SubagentSpawner>);
@@ -916,6 +917,7 @@ mod tests {
             activity: tokio::sync::mpsc::channel(1).0,
             cancel: CancellationToken::new(),
             approvals: None,
+            skills: Arc::from([]),
         };
 
         assert!(manager.spawn(&spec, ctx.clone()).is_ok());
@@ -959,6 +961,7 @@ mod tests {
             activity: tokio::sync::mpsc::channel(1).0,
             cancel: CancellationToken::new(),
             approvals: None,
+            skills: Arc::from([]),
         };
 
         let handle = manager.spawn(&spec, ctx.clone()).unwrap();
@@ -1013,6 +1016,7 @@ mod tests {
             activity: tokio::sync::mpsc::channel(1).0,
             cancel: CancellationToken::new(),
             approvals: None,
+            skills: Arc::from([]),
         };
 
         let handle = manager.spawn(&spec, ctx);

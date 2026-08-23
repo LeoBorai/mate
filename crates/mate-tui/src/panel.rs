@@ -8,7 +8,7 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
 
-use mate_tool_api::{AgentId, FileOp, ToolActivity};
+use mate_tool_api::{AgentId, FileOp, SkillMetadata, ToolActivity};
 
 /// Ring buffer bound for both logs (§9.7/§9.8): a session that runs for an hour must not
 /// accumulate thousands of rows nobody scrolls to.
@@ -30,7 +30,20 @@ pub(crate) struct DocRow {
     pub(crate) lines: usize,
 }
 
-/// One tab's tool activity log, newest first in both buffers.
+/// One discovered skill, as shown in the SKILLS widget — the catalog (`name`/`description`) is
+/// fixed at tab-open time (`Panel::new`, from the same `ToolCtx::skills` the session's toolset
+/// was built from); `active` flips true the first time this session sees a `SkillLoaded` record
+/// naming it, and stays true for the rest of the session (§9.3-style "sticky" state, not a live
+/// "in use right now" flag — a skill's instructions stay relevant to the conversation long after
+/// the `skill` tool call that loaded them returns).
+pub(crate) struct SkillRow {
+    pub(crate) name: String,
+    pub(crate) description: String,
+    pub(crate) active: bool,
+}
+
+/// One tab's tool activity log, newest first in both buffers, plus the skill catalog (§9.3/
+/// §9.7/§9.8/skills).
 #[derive(Default)]
 pub(crate) struct Panel {
     pub(crate) network: VecDeque<NetRow>,
@@ -38,9 +51,30 @@ pub(crate) struct Panel {
     /// Requests folded in since the last [`Self::reset_turn`] — the network widget's per-turn
     /// header count (§9.7), "is this thing hammering something right now".
     pub(crate) turn_requests: u32,
+    /// Every skill discovered for this session's workspace root, in discovery order (already
+    /// sorted by name) — fixed for the tab's lifetime; only each row's `active` flag changes.
+    pub(crate) skills: Vec<SkillRow>,
 }
 
 impl Panel {
+    /// Builds a tab's panel seeded with its discovered skill catalog — the same
+    /// `ToolCtx::skills` list the tab's toolset was built from, so the SKILLS widget never
+    /// lists a skill the `skill` tool couldn't actually load, or vice versa. Every other field
+    /// starts empty, same as [`Panel::default`].
+    pub(crate) fn new(catalog: Vec<SkillMetadata>) -> Self {
+        Self {
+            skills: catalog
+                .into_iter()
+                .map(|s| SkillRow {
+                    name: s.name,
+                    description: s.description,
+                    active: false,
+                })
+                .collect(),
+            ..Self::default()
+        }
+    }
+
     /// Called once per prompt sent (`crate::app::App::on_key`), so the count answers "this
     /// turn", not "this session".
     pub(crate) fn reset_turn(&mut self) {
@@ -89,6 +123,11 @@ impl Panel {
                 self.documents.truncate(RING_CAPACITY);
             }
             ToolActivity::Note { .. } => {}
+            ToolActivity::SkillLoaded { name } => {
+                if let Some(row) = self.skills.iter_mut().find(|s| s.name == name) {
+                    row.active = true;
+                }
+            }
         }
     }
 }
@@ -174,5 +213,62 @@ mod tests {
             panel.push(AgentId::ROOT, touched(&format!("f{i}.txt"), 1));
         }
         assert_eq!(panel.documents.len(), RING_CAPACITY);
+    }
+
+    fn skill(name: &str, description: &str) -> SkillMetadata {
+        SkillMetadata {
+            name: name.to_string(),
+            description: description.to_string(),
+            dir: PathBuf::from(format!(".claude/skills/{name}")),
+        }
+    }
+
+    #[test]
+    fn new_seeds_the_catalog_with_every_row_inactive() {
+        let panel = Panel::new(vec![skill("a", "A."), skill("b", "B.")]);
+        assert_eq!(panel.skills.len(), 2);
+        assert!(panel.skills.iter().all(|s| !s.active));
+    }
+
+    #[test]
+    fn a_skill_loaded_record_activates_the_matching_row_only() {
+        let mut panel = Panel::new(vec![skill("a", "A."), skill("b", "B.")]);
+        panel.push(
+            AgentId::ROOT,
+            ToolActivity::SkillLoaded {
+                name: "b".to_string(),
+            },
+        );
+
+        assert!(!panel.skills.iter().find(|s| s.name == "a").unwrap().active);
+        assert!(panel.skills.iter().find(|s| s.name == "b").unwrap().active);
+    }
+
+    #[test]
+    fn a_skill_loaded_record_naming_an_unknown_skill_is_a_harmless_no_op() {
+        let mut panel = Panel::new(vec![skill("a", "A.")]);
+        panel.push(
+            AgentId::ROOT,
+            ToolActivity::SkillLoaded {
+                name: "does-not-exist".to_string(),
+            },
+        );
+        assert!(!panel.skills[0].active);
+    }
+
+    #[test]
+    fn activation_stays_sticky_across_further_unrelated_activity() {
+        let mut panel = Panel::new(vec![skill("a", "A.")]);
+        panel.push(
+            AgentId::ROOT,
+            ToolActivity::SkillLoaded {
+                name: "a".to_string(),
+            },
+        );
+        panel.push(AgentId::ROOT, touched("b.txt", 1));
+        assert!(
+            panel.skills[0].active,
+            "later, unrelated activity must not clear an already-active skill"
+        );
     }
 }

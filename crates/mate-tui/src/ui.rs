@@ -22,7 +22,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::app::SpawnField;
 use crate::input::InputBox;
-use crate::panel::{DocRow, NetRow};
+use crate::panel::{DocRow, NetRow, SkillRow};
 use crate::panel_widgets::{AgentStatusPanel, PanelFocus, PanelView};
 use crate::roster::SubagentRow;
 use crate::transcript::{Entry, Transcript};
@@ -80,6 +80,9 @@ pub(crate) struct View<'a> {
     /// Network requests since the last prompt was sent — the network widget's per-turn header
     /// count (§9.7).
     pub(crate) network_turn_requests: u32,
+    /// The SKILLS widget's catalog — discovered skills for this tab's workspace
+    /// root, each row's `active` flag flipped once this session has actually loaded it.
+    pub(crate) skills: &'a [SkillRow],
     /// `Ctrl+P`/`Tab`/arrows (`M12-9`) — `None` when the panel doesn't have focus, in which
     /// case every panel key falls through to the input box as normal.
     pub(crate) panel_focus: Option<PanelFocus>,
@@ -558,6 +561,7 @@ fn render_panel(f: &mut Frame<'_>, area: Rect, view: &View<'_>) {
         network: view.network,
         documents: view.documents,
         network_turn_requests: view.network_turn_requests,
+        skills: view.skills,
         root: view.root,
         focus: view.panel_focus,
     };

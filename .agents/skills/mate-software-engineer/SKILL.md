@@ -13,11 +13,13 @@ workspace — read it before editing code, docs, or config here.
 
 1. **Never run `cargo` commands** — `cargo build`, `cargo test`,
    `cargo clippy`, `cargo fmt`, `cargo deny`, `cargo nextest`, etc. Not
-   directly, not via a script. Use the `Justfile` recipes as reference for
-   what CI runs, but do not execute them. If verification is needed, ask the
-   user to run it, or rely on CI once it exists. Verify changes by reading the
-   code and cross-checking against dependency sources
-   (`~/.cargo/registry/src/...`) instead of compiling.
+   directly, not via a script. This includes after making an edit, "just to
+   confirm it compiles" — that instinct is exactly what rule 1 forbids; the
+   edit itself is the deliverable, not a green build. Use the `Justfile`
+   recipes as reference for what CI runs, but do not execute them. If
+   verification is needed, ask the user to run it, or rely on CI once it
+   exists. Verify changes by reading the code and cross-checking against
+   dependency sources (`~/.cargo/registry/src/...`) instead of compiling.
 
 2. **Never reference `plan.md`, or any other planning doc supplied
    out-of-band, from anything committed** — code, doc comments, commit
