@@ -41,6 +41,8 @@ pub async fn run(cli: &crate::cli::Cli, config: &Config) -> Result<(), MateError
         http: config.http.clone(),
         delegation: config.delegation.clone(),
         max_output_bytes: config.tools.max_output_bytes,
+        agents_md_enabled: config.agents_md.enabled,
+        agents_md_max_bytes: config.agents_md.max_bytes,
     };
 
     let http = Arc::new(
@@ -56,7 +58,12 @@ pub async fn run(cli: &crate::cli::Cli, config: &Config) -> Result<(), MateError
     for root in &roots {
         let title = title_for(root);
         let spec = mate_tui::build_spec(&defaults, root, title.clone(), defaults.http.enabled);
-        let ctx = mate_tui::build_tool_ctx(root.clone(), defaults.max_output_bytes);
+        let ctx = mate_tui::build_tool_ctx(
+            root.clone(),
+            defaults.max_output_bytes,
+            defaults.agents_md_enabled,
+            defaults.agents_md_max_bytes,
+        );
         let skills = ctx.skills.to_vec();
         let handle = manager
             .spawn(&spec, ctx)

@@ -25,6 +25,7 @@ pub fn tool_ctx(root: PathBuf) -> ToolCtx {
         cancel: CancellationToken::new(),
         approvals: None,
         skills: Arc::from([]),
+        agents_md: None,
     }
 }
 

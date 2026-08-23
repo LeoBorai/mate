@@ -15,6 +15,8 @@
 
 use std::path::Path;
 
+use mate_tool_api::AgentsMdSource;
+
 /// One tool available to the agent, as shown in the preamble's tool list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolDescriptor {
@@ -84,6 +86,7 @@ pub fn render_preamble(
     os: &str,
     tools: &[ToolDescriptor],
     skills: &[SkillDescriptor],
+    agents_md: Option<&AgentsMdSource>,
 ) -> String {
     let scaffold = format!(
         "Workspace root: {}\nOperating system: {os}",
@@ -122,6 +125,19 @@ pub fn render_preamble(
         sections.push(skill_list.as_str());
     }
 
+    // Rendered last, after skills: the most-specific-instructions layer goes on top, both
+    // because it's likely to reference tool/skill names already listed above it, and to match
+    // the "closest/most specific wins" precedence other agent frameworks use for these files.
+    let agents_md_section = agents_md.map(|source| {
+        format!(
+            "Project instructions ({}):\n{}",
+            source.filename, source.content
+        )
+    });
+    if let Some(agents_md_section) = &agents_md_section {
+        sections.push(agents_md_section.as_str());
+    }
+
     sections.join("\n\n")
 }
 
@@ -149,6 +165,13 @@ mod tests {
         )]
     }
 
+    fn sample_agents_md() -> AgentsMdSource {
+        AgentsMdSource {
+            filename: "AGENTS.md",
+            content: "Run `just test` before committing.".to_string(),
+        }
+    }
+
     /// Pins the exact rendered output (`M1-4`'s "snapshot test"): a golden string literal
     /// rather than `insta`, so a wording change is a visible one-line diff in this file
     /// instead of a separate `.snap` file to keep in sync.
@@ -160,6 +183,7 @@ mod tests {
             "linux",
             &sample_tools(),
             &[],
+            None,
         );
 
         assert_eq!(
@@ -185,6 +209,7 @@ mod tests {
             "linux",
             &tools,
             &[],
+            None,
         );
 
         assert_eq!(
@@ -212,6 +237,7 @@ mod tests {
             "linux",
             &[],
             &[],
+            None,
         );
         assert!(rendered.ends_with("Available tools:\n(none)"));
     }
@@ -225,6 +251,7 @@ mod tests {
             "linux",
             &tools,
             &[],
+            None,
         );
         let subagent = render_preamble(
             PreambleRole::Subagent,
@@ -232,6 +259,7 @@ mod tests {
             "linux",
             &tools,
             &[],
+            None,
         );
         assert_ne!(root, subagent);
         assert!(subagent.contains("You do not see the parent conversation"));
@@ -245,6 +273,7 @@ mod tests {
             "linux",
             &sample_tools(),
             &[],
+            None,
         );
         assert!(!rendered.contains("Available skills"));
     }
@@ -257,6 +286,7 @@ mod tests {
             "linux",
             &sample_tools(),
             &sample_skills(),
+            None,
         );
 
         assert!(
@@ -266,6 +296,60 @@ mod tests {
                  Load one with the `skill` tool before following its instructions."
             ),
             "skills section must render after the tool list: {rendered}"
+        );
+    }
+
+    #[test]
+    fn agents_md_section_omitted_when_none() {
+        let rendered = render_preamble(
+            PreambleRole::Root,
+            Path::new("/work/api"),
+            "linux",
+            &sample_tools(),
+            &sample_skills(),
+            None,
+        );
+        assert!(!rendered.contains("Project instructions"));
+    }
+
+    #[test]
+    fn an_agents_md_section_renders_last_and_names_its_source() {
+        let rendered = render_preamble(
+            PreambleRole::Root,
+            Path::new("/work/api"),
+            "linux",
+            &sample_tools(),
+            &sample_skills(),
+            Some(&sample_agents_md()),
+        );
+
+        assert!(
+            rendered.ends_with(
+                "Project instructions (AGENTS.md):\n\
+                 Run `just test` before committing."
+            ),
+            "agents_md section must render last, after skills, naming its source file: {rendered}"
+        );
+    }
+
+    #[test]
+    fn an_agents_md_section_names_a_non_canonical_source_filename() {
+        let source = AgentsMdSource {
+            filename: "CLAUDE.md",
+            content: "Use snake_case.".to_string(),
+        };
+        let rendered = render_preamble(
+            PreambleRole::Root,
+            Path::new("/work/api"),
+            "linux",
+            &sample_tools(),
+            &[],
+            Some(&source),
+        );
+
+        assert!(
+            rendered.ends_with("Project instructions (CLAUDE.md):\nUse snake_case."),
+            "the section header must name whichever file was actually discovered: {rendered}"
         );
     }
 }

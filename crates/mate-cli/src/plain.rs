@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use mate_core::agent::{BuiltAgent, build_agent};
+use mate_core::agents_md::discover_agents_md_capped;
 use mate_core::backend::Backend;
 use mate_core::config::AgentSpec;
 use mate_core::preamble::{PreambleRole, SkillDescriptor, render_preamble};
@@ -65,6 +66,11 @@ pub async fn run(cli: &Cli, config: &Config) -> Result<(), MateError> {
         .iter()
         .map(|s| SkillDescriptor::new(s.name.clone(), s.description.clone()))
         .collect();
+    let agents_md = discover_agents_md_capped(
+        &workspace_root,
+        config.agents_md.enabled,
+        config.agents_md.max_bytes,
+    );
     // Always `false`: this frontend never routes through `mate_core::session::SessionManager`
     // (see this module's doc comment), so there's no `SubagentSpawner` to give `ctx.spawner`
     // below — advertising `spawn_agent` here would tell the model about a tool
@@ -75,6 +81,7 @@ pub async fn run(cli: &Cli, config: &Config) -> Result<(), MateError> {
         std::env::consts::OS,
         &tool_descriptors(false, config.http.enabled, !skills.is_empty()),
         &skill_descriptors,
+        agents_md.as_ref(),
     );
 
     let spec = AgentSpec {
@@ -103,6 +110,7 @@ pub async fn run(cli: &Cli, config: &Config) -> Result<(), MateError> {
         cancel: cancel.clone(),
         approvals: None,
         skills: Arc::from(skills),
+        agents_md: agents_md.map(Arc::new),
     };
     let agent = build_agent(&backend, &http, &spec, ctx);
 

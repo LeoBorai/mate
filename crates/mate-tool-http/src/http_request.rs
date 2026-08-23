@@ -299,6 +299,7 @@ mod tests {
             cancel: tokio_util::sync::CancellationToken::new(),
             approvals: None,
             skills: Arc::from([]),
+            agents_md: None,
         };
         let shared = Arc::new(HttpShared::new(60).unwrap());
         let tool = HttpRequest::new(ctx, shared, false);

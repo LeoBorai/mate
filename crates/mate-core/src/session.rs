@@ -263,6 +263,7 @@ impl SessionManager {
                 ctx.root.clone(),
                 ctx.max_output_bytes,
                 ctx.skills.clone(),
+                ctx.agents_md.clone(),
                 &spec.agent,
             ));
             ctx.spawner = Some(runner.clone() as Arc<dyn mate_tool_api::SubagentSpawner>);
@@ -918,6 +919,7 @@ mod tests {
             cancel: CancellationToken::new(),
             approvals: None,
             skills: Arc::from([]),
+            agents_md: None,
         };
 
         assert!(manager.spawn(&spec, ctx.clone()).is_ok());
@@ -962,6 +964,7 @@ mod tests {
             cancel: CancellationToken::new(),
             approvals: None,
             skills: Arc::from([]),
+            agents_md: None,
         };
 
         let handle = manager.spawn(&spec, ctx.clone()).unwrap();
@@ -1017,6 +1020,7 @@ mod tests {
             cancel: CancellationToken::new(),
             approvals: None,
             skills: Arc::from([]),
+            agents_md: None,
         };
 
         let handle = manager.spawn(&spec, ctx);

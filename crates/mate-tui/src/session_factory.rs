@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 
 use std::sync::Arc;
 
+use mate_core::agents_md::discover_agents_md_capped;
 use mate_core::config::{AgentSpec, DelegationPolicy, HttpPolicy, SessionSpec};
 use mate_core::preamble::{PreambleRole, SkillDescriptor, render_preamble};
 use mate_core::toolset::tool_descriptors;
@@ -30,6 +31,8 @@ pub struct SessionDefaults {
     pub http: HttpPolicy,
     pub delegation: DelegationPolicy,
     pub max_output_bytes: usize,
+    pub agents_md_enabled: bool,
+    pub agents_md_max_bytes: usize,
 }
 
 impl SessionDefaults {
@@ -70,6 +73,11 @@ pub fn build_spec(
         .iter()
         .map(|s| SkillDescriptor::new(s.name.clone(), s.description.clone()))
         .collect();
+    let agents_md = discover_agents_md_capped(
+        root,
+        defaults.agents_md_enabled,
+        defaults.agents_md_max_bytes,
+    );
     let preamble = render_preamble(
         PreambleRole::Root,
         root,
@@ -80,6 +88,7 @@ pub fn build_spec(
             !skills.is_empty(),
         ),
         &skill_descriptors,
+        agents_md.as_ref(),
     );
 
     let agent = AgentSpec {
@@ -108,9 +117,15 @@ pub fn build_spec(
 /// dropped immediately — `SessionManager::spawn` (`M11-4`) overwrites `ctx.activity` with its
 /// own channel before the agent is built, the same way it already overwrites `ctx.cancel`, so
 /// this one is just a placeholder that's never actually read from.
-pub fn build_tool_ctx(root: PathBuf, max_output_bytes: usize) -> ToolCtx {
+pub fn build_tool_ctx(
+    root: PathBuf,
+    max_output_bytes: usize,
+    agents_md_enabled: bool,
+    agents_md_max_bytes: usize,
+) -> ToolCtx {
     let (activity, _activity_rx) = tokio::sync::mpsc::channel(64);
     let skills = mate_tool_skills::discover_skills(&root);
+    let agents_md = discover_agents_md_capped(&root, agents_md_enabled, agents_md_max_bytes);
     ToolCtx {
         agent: AgentId::ROOT,
         root,
@@ -120,6 +135,7 @@ pub fn build_tool_ctx(root: PathBuf, max_output_bytes: usize) -> ToolCtx {
         cancel: CancellationToken::new(),
         approvals: None,
         skills: Arc::from(skills),
+        agents_md: agents_md.map(Arc::new),
     }
 }
 
@@ -137,6 +153,8 @@ mod tests {
             http: HttpPolicy::default(),
             delegation: DelegationPolicy::default(),
             max_output_bytes: 1_000_000,
+            agents_md_enabled: true,
+            agents_md_max_bytes: 32_768,
         }
     }
 
@@ -184,5 +202,45 @@ mod tests {
         assert_eq!(spec.title, "api");
         assert_eq!(spec.root, PathBuf::from("/work/api"));
         assert_eq!(spec.agent.model, "org/model");
+    }
+
+    #[test]
+    fn build_spec_folds_a_discovered_agents_md_into_the_preamble() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("AGENTS.md"), "Run `just test`.").unwrap();
+
+        let d = defaults();
+        let spec = build_spec(&d, tmp.path(), "t".to_string(), true);
+        assert!(
+            spec.agent
+                .preamble
+                .contains("Project instructions (AGENTS.md):\nRun `just test`."),
+            "preamble: {}",
+            spec.agent.preamble
+        );
+    }
+
+    #[test]
+    fn build_spec_omits_agents_md_when_disabled_in_defaults() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("AGENTS.md"), "Run `just test`.").unwrap();
+
+        let mut d = defaults();
+        d.agents_md_enabled = false;
+        let spec = build_spec(&d, tmp.path(), "t".to_string(), true);
+        assert!(!spec.agent.preamble.contains("Project instructions"));
+    }
+
+    #[test]
+    fn build_tool_ctx_carries_the_discovered_agents_md() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("AGENTS.md"), "Run `just test`.").unwrap();
+
+        let ctx = build_tool_ctx(tmp.path().to_path_buf(), 1_000_000, true, 32_768);
+        let source = ctx
+            .agents_md
+            .expect("AGENTS.md should have been discovered");
+        assert_eq!(source.filename, "AGENTS.md");
+        assert_eq!(source.content, "Run `just test`.");
     }
 }

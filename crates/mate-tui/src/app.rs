@@ -944,7 +944,12 @@ impl App {
             .unwrap_or_else(|| "mate".to_string());
         let http_enabled = self.defaults.http.enabled;
         let spec = session_factory::build_spec(&self.defaults, &root, title.clone(), http_enabled);
-        let ctx = session_factory::build_tool_ctx(root.clone(), self.defaults.max_output_bytes);
+        let ctx = session_factory::build_tool_ctx(
+            root.clone(),
+            self.defaults.max_output_bytes,
+            self.defaults.agents_md_enabled,
+            self.defaults.agents_md_max_bytes,
+        );
         let skills = ctx.skills.to_vec();
 
         match self.manager.spawn(&spec, ctx) {
@@ -1147,7 +1152,12 @@ impl App {
             .unwrap_or_else(|| "mate".to_string());
 
         let spec = session_factory::build_spec(&defaults, &root, title.clone(), form.http_enabled);
-        let ctx = session_factory::build_tool_ctx(root.clone(), defaults.max_output_bytes);
+        let ctx = session_factory::build_tool_ctx(
+            root.clone(),
+            defaults.max_output_bytes,
+            defaults.agents_md_enabled,
+            defaults.agents_md_max_bytes,
+        );
         let skills = ctx.skills.to_vec();
 
         match self.manager.spawn(&spec, ctx) {
@@ -1378,6 +1388,7 @@ mod tests {
             cancel: CancellationToken::new(),
             approvals: None,
             skills: std::sync::Arc::from([]),
+            agents_md: None,
         }
     }
 
@@ -1391,6 +1402,8 @@ mod tests {
             http: HttpPolicy::default(),
             delegation: DelegationPolicy::default(),
             max_output_bytes: 1_000_000,
+            agents_md_enabled: true,
+            agents_md_max_bytes: 32_768,
         }
     }
 

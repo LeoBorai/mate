@@ -184,6 +184,7 @@ mod tests {
             cancel: CancellationToken::new(),
             approvals: None,
             skills: Arc::from([]),
+            agents_md: None,
         }
     }
 
