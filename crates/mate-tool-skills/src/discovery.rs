@@ -101,7 +101,12 @@ mod tests {
     #[test]
     fn discovers_a_skill_under_dot_claude_skills() {
         let tmp = tempfile::tempdir().unwrap();
-        write_skill(tmp.path(), ".claude/skills", "pdf-processing", "Extract PDFs.");
+        write_skill(
+            tmp.path(),
+            ".claude/skills",
+            "pdf-processing",
+            "Extract PDFs.",
+        );
 
         let skills = discover_skills(tmp.path());
         assert_eq!(skills.len(), 1);
@@ -121,10 +126,8 @@ mod tests {
         write_skill(tmp.path(), ".copilot/skills", "c", "C.");
         write_skill(tmp.path(), ".agents/skills", "d", "D.");
 
-        let names: Vec<&str> = discover_skills(tmp.path())
-            .iter()
-            .map(|s| s.name.as_str())
-            .collect();
+        let skills = discover_skills(tmp.path());
+        let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, vec!["a", "b", "c", "d"]);
     }
 
@@ -167,10 +170,8 @@ mod tests {
         write_skill(tmp.path(), ".claude/skills", "zebra", "Z.");
         write_skill(tmp.path(), ".claude/skills", "alpha", "A.");
 
-        let names: Vec<&str> = discover_skills(tmp.path())
-            .iter()
-            .map(|s| s.name.as_str())
-            .collect();
+        let skills = discover_skills(tmp.path());
+        let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, vec!["alpha", "zebra"]);
     }
 }

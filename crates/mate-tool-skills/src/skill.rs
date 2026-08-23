@@ -158,7 +158,12 @@ mod tests {
         );
 
         let tool = Skill::new(ctx(root, vec![metadata]));
-        let out = tool.call(SkillArgs { name: "pdf-processing".to_string() }).await.unwrap();
+        let out = tool
+            .call(SkillArgs {
+                name: "pdf-processing".to_string(),
+            })
+            .await
+            .unwrap();
 
         assert!(
             out.starts_with(
@@ -197,7 +202,11 @@ mod tests {
         let (ctx, mut rx) = ctx_with_activity(root, vec![metadata]);
 
         let tool = Skill::new(ctx);
-        tool.call(SkillArgs { name: "a".to_string() }).await.unwrap();
+        tool.call(SkillArgs {
+            name: "a".to_string(),
+        })
+        .await
+        .unwrap();
 
         let (agent, activity) = rx.try_recv().expect("a SkillLoaded record must be emitted");
         assert_eq!(agent, AgentId::ROOT);

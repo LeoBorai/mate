@@ -769,11 +769,7 @@ mod tests {
         ];
         // One row available — normally subagents' floor would claim it; a focused Documents
         // must claim it instead.
-        let heights = allocate_list_heights(
-            1,
-            order,
-            [&subagents, &network, &documents, &skills],
-        );
+        let heights = allocate_list_heights(1, order, [&subagents, &network, &documents, &skills]);
         assert_eq!(
             heights,
             [0, 0, 1, 0],
