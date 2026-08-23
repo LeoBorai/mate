@@ -1682,14 +1682,14 @@ mod tests {
         app.on_key(ctrl_key('p')).await;
 
         let tab_key = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
-        for _ in 0..5 {
+        for _ in 0..6 {
             app.on_key(tab_key).await;
         }
 
         assert_eq!(
             app.tabs[0].panel_focus.unwrap().widget,
             PanelWidgetKind::Model,
-            "five Tabs from Model must cycle through all five widgets and land back on Model"
+            "six Tabs from Model must cycle through all six widgets and land back on Model"
         );
     }
 
