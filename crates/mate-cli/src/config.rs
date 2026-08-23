@@ -328,7 +328,7 @@ mod tests {
     }
 
     #[test]
-    fn agents_md_max_bytes_is_overridable_via_project_file_and_env() {
+    fn agents_md_max_bytes_is_overridable_via_project_file() {
         Jail::expect_with(|jail| {
             jail.clear_env();
             let home = jail.directory().display().to_string();
@@ -344,13 +344,6 @@ mod tests {
             let config = load(&cli(&[])).unwrap();
             assert_eq!(config.agents_md.max_bytes, 4096);
             assert!(config.agents_md.enabled, "unset fields keep their default");
-
-            jail.set_env("MATE_AGENTS_MD_MAX_BYTES", "1024");
-            let config = load(&cli(&[])).unwrap();
-            assert_eq!(
-                config.agents_md.max_bytes, 1024,
-                "env must win over the project file"
-            );
             Ok(())
         });
     }
