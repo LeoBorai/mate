@@ -146,6 +146,7 @@ mod tests {
             cancel: CancellationToken::new(),
             approvals: None,
             skills: std::sync::Arc::from([]),
+            agents_md: None,
         }
     }
 
@@ -166,6 +167,7 @@ mod tests {
                 cancel: CancellationToken::new(),
                 approvals: None,
                 skills: std::sync::Arc::from([]),
+                agents_md: None,
             },
             rx,
         )

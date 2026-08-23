@@ -28,6 +28,7 @@ pub struct Config {
     pub panel: PanelConfig,
     pub pricing: HashMap<String, PricingEntry>,
     pub http: HttpPolicy,
+    pub agents_md: AgentsMdConfig,
 }
 
 impl Default for Config {
@@ -57,6 +58,27 @@ impl Default for Config {
                 ),
             ]),
             http: HttpPolicy::default(),
+            agents_md: AgentsMdConfig::default(),
+        }
+    }
+}
+
+/// Project-instructions file support (`AGENTS.md`, `CLAUDE.md`, and other agent frameworks'
+/// filenames for the same concept — `mate_core::agents_md::discover_agents_md`). `max_bytes`
+/// bounds the section's size in the rendered preamble, not the file on disk: a larger file is
+/// read in full and then truncated, matching `truncate_with_notice`'s contract.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentsMdConfig {
+    pub enabled: bool,
+    pub max_bytes: usize,
+}
+
+impl Default for AgentsMdConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_bytes: 32_768,
         }
     }
 }
@@ -301,6 +323,27 @@ mod tests {
 
             let config = load(&cli(&["--config", "custom.toml"])).unwrap();
             assert_eq!(config.model, "from-custom-file");
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn agents_md_max_bytes_is_overridable_via_project_file() {
+        Jail::expect_with(|jail| {
+            jail.clear_env();
+            let home = jail.directory().display().to_string();
+            jail.set_env("HOME", home);
+            jail.create_file(
+                ".mate.toml",
+                r#"
+                [agents_md]
+                max_bytes = 4096
+                "#,
+            )?;
+
+            let config = load(&cli(&[])).unwrap();
+            assert_eq!(config.agents_md.max_bytes, 4096);
+            assert!(config.agents_md.enabled, "unset fields keep their default");
             Ok(())
         });
     }

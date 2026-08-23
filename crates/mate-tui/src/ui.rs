@@ -87,6 +87,10 @@ pub(crate) struct View<'a> {
     /// The SKILLS widget's catalog — discovered skills for this tab's workspace
     /// root, each row's `active` flag flipped once this session has actually loaded it.
     pub(crate) skills: &'a [SkillRow],
+    /// The `PROJECT` widget's tick (§9.2 extension) — the filename of whichever project-
+    /// instructions file was discovered for this tab's workspace root (`AGENTS.md`,
+    /// `CLAUDE.md`, ...), or `None` if none was.
+    pub(crate) agents_md: Option<&'a str>,
     /// `Ctrl+P`/`Tab`/arrows (`M12-9`) — `None` when the panel doesn't have focus, in which
     /// case every panel key falls through to the input box as normal.
     pub(crate) panel_focus: Option<PanelFocus>,
@@ -566,6 +570,7 @@ fn render_panel(f: &mut Frame<'_>, area: Rect, view: &View<'_>) {
         documents: view.documents,
         network_turn_requests: view.network_turn_requests,
         skills: view.skills,
+        agents_md: view.agents_md,
         root: view.root,
         focus: view.panel_focus,
     };

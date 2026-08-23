@@ -26,6 +26,7 @@ fn ctx() -> ToolCtx {
         cancel: tokio_util::sync::CancellationToken::new(),
         approvals: None,
         skills: Arc::from([]),
+        agents_md: None,
     }
 }
 

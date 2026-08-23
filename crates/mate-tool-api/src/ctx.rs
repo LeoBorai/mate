@@ -8,7 +8,9 @@ use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
 
-use crate::{ActivitySink, AgentId, Approvals, SkillMetadata, SubagentSpawner, ToolFailure};
+use crate::{
+    ActivitySink, AgentId, AgentsMdSource, Approvals, SkillMetadata, SubagentSpawner, ToolFailure,
+};
 
 /// Everything a tool needs at construction time, captured by value into the tool struct
 /// (§8.1 note 2: `call(&self, args)` takes no context parameter, so root, caps, spawner,
@@ -38,6 +40,14 @@ pub struct ToolCtx {
     /// attaches the `skill` tool only when this is non-empty, the same conditional-attachment
     /// pattern `spawner`/http already use.
     pub skills: Arc<[SkillMetadata]>,
+    /// The workspace root's project-instructions file (`AGENTS.md`, `CLAUDE.md`, ...),
+    /// discovered once at session-build time by `mate_core::agents_md::discover_agents_md` —
+    /// never re-read per call. `None` when no recognized filename is present, or the config
+    /// disables the feature. No tool reads this at call time; it rides `ToolCtx` only because
+    /// `mate_core::session::SessionManager::spawn` already threads `ctx.skills` the same way to
+    /// build each session's `SubagentRunner`, and this reuses that exact channel rather than
+    /// adding a parallel one.
+    pub agents_md: Option<Arc<AgentsMdSource>>,
 }
 
 impl ToolCtx {
@@ -90,6 +100,7 @@ mod tests {
             cancel: CancellationToken::new(),
             approvals: None,
             skills: Arc::from([]),
+            agents_md: None,
         }
     }
 

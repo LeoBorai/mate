@@ -45,8 +45,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use mate_tool_api::{
-    ActivitySink, AgentId, Approvals, SkillMetadata, SubagentOutcome, SubagentReport,
-    SubagentRequest, SubagentSpawner, ToolCtx, ToolFailure, ToolProfile, truncate_with_notice,
+    ActivitySink, AgentId, AgentsMdSource, Approvals, SkillMetadata, SubagentOutcome,
+    SubagentReport, SubagentRequest, SubagentSpawner, ToolCtx, ToolFailure, ToolProfile,
+    truncate_with_notice,
 };
 use mate_tool_http::HttpShared;
 use rig::agent::Agent;
@@ -85,6 +86,10 @@ pub struct SubagentRunner {
     /// re-walked here. Every subagent, at any depth, gets a clone of this same list, the same
     /// "one value, threaded down" reasoning `activity`/`approvals` already use above.
     skills: Arc<[SkillMetadata]>,
+    /// Project instructions discovered once, at session-build time, the same way `skills`
+    /// above is — never re-read here. Every subagent, at any depth, gets a clone of this same
+    /// value.
+    agents_md: Option<Arc<AgentsMdSource>>,
     model: String,
     sub_provider: Option<String>,
     base_url: Option<String>,
@@ -127,6 +132,7 @@ impl SubagentRunner {
         root: PathBuf,
         max_output_bytes: usize,
         skills: Arc<[SkillMetadata]>,
+        agents_md: Option<Arc<AgentsMdSource>>,
         root_agent: &AgentSpec,
     ) -> Self {
         let max_concurrent = root_agent.delegation.max_concurrent.max(1);
@@ -140,6 +146,7 @@ impl SubagentRunner {
             root,
             max_output_bytes,
             skills,
+            agents_md,
             model: root_agent.model.clone(),
             sub_provider: root_agent.sub_provider.clone(),
             base_url: root_agent.base_url.clone(),
@@ -190,6 +197,7 @@ impl SubagentRunner {
             root: self.root.clone(),
             max_output_bytes: self.max_output_bytes,
             skills: self.skills.clone(),
+            agents_md: self.agents_md.clone(),
             model: self.model.clone(),
             sub_provider: self.sub_provider.clone(),
             base_url: self.base_url.clone(),
@@ -262,6 +270,7 @@ impl SubagentSpawner for SubagentRunner {
             cancel: cancel.clone(),
             approvals: Some(self.approvals.clone()),
             skills: self.skills.clone(),
+            agents_md: self.agents_md.clone(),
         };
 
         let max_turns = request
@@ -283,6 +292,7 @@ impl SubagentSpawner for SubagentRunner {
             std::env::consts::OS,
             &tool_descriptors(may_delegate, http.enabled, !self.skills.is_empty()),
             &skill_descriptors,
+            self.agents_md.as_deref(),
         );
 
         let spec = AgentSpec {
@@ -516,6 +526,7 @@ mod tests {
                 PathBuf::from("."),
                 1_000_000,
                 Arc::from([]),
+                None,
                 &spec,
             ),
             events_rx,
