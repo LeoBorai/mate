@@ -5,11 +5,14 @@
 //! instead of whatever partial answer it could give with what it already found.
 //!
 //! This is advisory, not enforcement: `ToolChoice::None` is a request to the provider, and a
-//! model (or a test double that ignores it) can still emit a tool call anyway. The actual
-//! guarantee that a tool-looping model terminates at all — rather than looping forever — comes
-//! from Rig's own `default_max_turns` budget, independent of this hook (see
-//! `mate-core/tests/tool_round_trip.rs`'s turn-cap test). This hook only improves the *outcome*
-//! for models that honor `tool_choice`, which is the common case for real providers.
+//! model (or a test double that ignores it) can still emit a tool call anyway — Rig then rejects
+//! that call with an empty `allowed_tools`, as `PromptError::UnknownToolCall`.
+//! `crate::streaming::drive` recognizes exactly that shape (empty `allowed_tools`) and ends the
+//! turn gracefully instead of surfacing it as a bare `AgentEvent::Error`, so a model that ignores
+//! the notice still gets the same outcome as one that honors it. The actual guarantee that a
+//! tool-looping model terminates at all — rather than looping forever — comes from Rig's own
+//! `default_max_turns` budget, independent of this hook (see `mate-core/tests/tool_round_trip.rs`'s
+//! turn-cap test).
 
 use rig::agent::{AgentHook, CompletionCallAction, CompletionCallEvent, HookContext, RequestPatch};
 use rig::completion::Document;

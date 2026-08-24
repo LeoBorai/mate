@@ -29,7 +29,7 @@ use futures::{Stream, StreamExt};
 use mate_tool_api::{AgentId, SubagentOutcome, ToolActivity};
 use rig::OneOrMany;
 use rig::agent::{Agent, MultiTurnStreamItem, StreamingError};
-use rig::completion::{CompletionModel, GetTokenUsage, Message, Usage};
+use rig::completion::{CompletionModel, GetTokenUsage, Message, PromptError, Usage};
 use rig::message::ToolResultContent;
 use rig::streaming::{
     StreamedAssistantContent, StreamedUserContent, StreamingChat, StreamingPrompt,
@@ -268,6 +268,22 @@ where
                 match next {
                     None => break,
                     Some(Err(err)) => {
+                        if is_ignored_turn_cap_notice(&err) {
+                            // `crate::turn_cap::TurnCapHook` patches the forced-final turn's
+                            // request to `ToolChoice::None`; Rig enforces that by rejecting any
+                            // tool call the model attempts anyway with an empty `allowed_tools`,
+                            // as `PromptError::UnknownToolCall`. The hook's whole point is to
+                            // avoid ending the run in a bare failure, so a model that ignores its
+                            // advisory notice and calls a tool anyway must still end gracefully
+                            // — with whatever text it produced before the rejected call — rather
+                            // than surfacing this as an `AgentEvent::Error` and dropping the turn
+                            // (see `crate::session::run_prompt`'s `outcome.error.is_none()` gate).
+                            on_event(AgentEventEnvelope {
+                                agent: AgentId::ROOT,
+                                event: AgentEvent::TurnComplete,
+                            });
+                            break;
+                        }
                         let message = err.to_string();
                         on_event(AgentEventEnvelope {
                             agent: AgentId::ROOT,
@@ -292,6 +308,19 @@ where
     }
 
     outcome
+}
+
+/// Whether `err` is exactly the shape [`crate::turn_cap::TurnCapHook`] can provoke: the model
+/// called a tool anyway on the turn the hook patched to `ToolChoice::None`. An empty
+/// `allowed_tools` is what distinguishes this from a genuinely broken toolset (a model calling a
+/// tool that was never registered at all, which still has a non-empty `allowed_tools` and must
+/// still surface as a real error) — nothing else in `mate` ever narrows a turn's allowed tools.
+fn is_ignored_turn_cap_notice(err: &StreamingError) -> bool {
+    matches!(
+        err,
+        StreamingError::Prompt(inner)
+            if matches!(inner.as_ref(), PromptError::UnknownToolCall { allowed_tools, .. } if allowed_tools.is_empty())
+    )
 }
 
 /// Maps one `MultiTurnStreamItem` to at most one [`AgentEvent`] (`M2-3`). `MultiTurnStreamItem`
@@ -642,6 +671,66 @@ mod tests {
         assert!(outcome.error.is_some());
         assert!(!outcome.cancelled);
         assert_eq!(outcome.text, "partial");
+    }
+
+    fn unknown_tool_call_err(allowed_tools: Vec<String>) -> StreamingError {
+        StreamingError::Prompt(Box::new(PromptError::UnknownToolCall {
+            tool_name: "find_files".to_string(),
+            available_tools: vec!["find_files".to_string()],
+            allowed_tools,
+            chat_history: Box::new(Vec::new()),
+        }))
+    }
+
+    #[tokio::test]
+    async fn a_tool_call_rejected_by_the_turn_cap_ends_the_turn_gracefully() {
+        // `TurnCapHook` patches the final turn to `ToolChoice::None`; a model that ignores that
+        // advisory notice and calls a tool anyway gets rejected by Rig with an empty
+        // `allowed_tools` — this must surface as a normal `TurnComplete`, not a bare `Error`, or
+        // `run_prompt` drops the whole turn from history (`crate::session`'s `outcome.error.is_none()`
+        // gate).
+        let items: Vec<Result<MultiTurnStreamItem<()>, StreamingError>> = vec![
+            text_item("here's what I found so far"),
+            Err(unknown_tool_call_err(Vec::new())),
+        ];
+        let mut stream = Box::pin(futures::stream::iter(items));
+        let cancel = CancellationToken::new();
+        let mut events = Vec::new();
+
+        let outcome = drive(&mut stream, &cancel, |envelope| events.push(envelope.event)).await;
+
+        assert_eq!(
+            events,
+            vec![
+                AgentEvent::Token("here's what I found so far".to_string()),
+                AgentEvent::TurnComplete,
+            ],
+            "a turn-cap rejection must end the turn like a normal completion, not an error"
+        );
+        assert!(outcome.error.is_none());
+        assert_eq!(outcome.text, "here's what I found so far");
+    }
+
+    #[tokio::test]
+    async fn an_unknown_tool_call_with_other_tools_still_allowed_stays_a_real_error() {
+        // A non-empty `allowed_tools` means the rejection isn't `TurnCapHook`'s doing — the
+        // model called a tool truly outside its registered set, which is a genuine failure and
+        // must still surface as one.
+        let items: Vec<Result<MultiTurnStreamItem<()>, StreamingError>> =
+            vec![Err(unknown_tool_call_err(vec!["read_file".to_string()]))];
+        let mut stream = Box::pin(futures::stream::iter(items));
+        let cancel = CancellationToken::new();
+        let mut saw_error = false;
+
+        let outcome = drive(&mut stream, &cancel, |envelope| {
+            if matches!(envelope.event, AgentEvent::Error(_)) {
+                saw_error = true;
+            }
+        })
+        .await;
+
+        assert!(saw_error);
+        assert!(outcome.error.is_some());
     }
 
     #[test]
