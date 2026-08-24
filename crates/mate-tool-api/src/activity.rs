@@ -49,6 +49,27 @@ pub enum ToolActivity {
         ok: bool,
         ms: u64,
     },
+    /// `write_file`'s before/after line diff, for the transcript's preview (§9.9-adjacent) —
+    /// display-only, never sent to the model. A second, additional record alongside the
+    /// `FileTouched` every write already emits; the panel's DOCUMENTS log ignores this one.
+    FileDiff { path: PathBuf, diff: Vec<DiffLine> },
+}
+
+/// One line of a `write_file` before/after diff (§ display-only preview), tagged the same way
+/// `similar::ChangeTag` tags a line — kept as this crate's own type rather than leaking
+/// `similar`'s type across the crate boundary to `mate-tui`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffTag {
+    Insert,
+    Delete,
+    Equal,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiffLine {
+    pub tag: DiffTag,
+    /// Line text, no trailing newline.
+    pub text: String,
 }
 
 /// `mate-tool-fs`'s `read_file`/`list_dir`/`find_files` (`M3`) emit `Read`; `write_file` emits
