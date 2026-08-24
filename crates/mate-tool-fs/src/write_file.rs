@@ -12,11 +12,11 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use similar::{ChangeTag, TextDiff};
 
-/// Cap on diff lines sent to the TUI's display-only preview (§ write_file diff) — a huge write
-/// must not balloon one transcript entry's memory. `Equal` context lines count toward this the
-/// same as changed ones; there's no attempt to bias truncation toward keeping changes over
-/// context, since that would need a second pass and this is just a memory backstop, not a UX
-/// feature.
+/// Cap on diff lines sent to the TUI — both the pre-write approval modal and the post-write
+/// transcript preview (§ write_file diff) — a huge write must not balloon either one's memory.
+/// `Equal` context lines count toward this the same as changed ones; there's no attempt to bias
+/// truncation toward keeping changes over context, since that would need a second pass and this
+/// is just a memory backstop, not a UX feature.
 const MAX_DIFF_LINES: usize = 2_000;
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -40,6 +40,32 @@ impl WriteFile {
     pub fn new(ctx: ToolCtx) -> Self {
         Self { ctx }
     }
+}
+
+/// Line diff between the old and new content, capped at [`MAX_DIFF_LINES`] — shared by the
+/// pre-write approval request and the post-write `FileDiff` transcript record (§ write_file
+/// diff), computed once since the write itself can't change what the diff says.
+fn build_diff(old: &str, new: &str) -> Vec<DiffLine> {
+    let mut diff: Vec<DiffLine> = TextDiff::from_lines(old, new)
+        .iter_all_changes()
+        .map(|change| DiffLine {
+            tag: match change.tag() {
+                ChangeTag::Insert => DiffTag::Insert,
+                ChangeTag::Delete => DiffTag::Delete,
+                ChangeTag::Equal => DiffTag::Equal,
+            },
+            text: change.to_string_lossy().trim_end_matches('\n').to_string(),
+        })
+        .collect();
+    if diff.len() > MAX_DIFF_LINES {
+        let more = diff.len() - MAX_DIFF_LINES;
+        diff.truncate(MAX_DIFF_LINES);
+        diff.push(DiffLine {
+            tag: DiffTag::Equal,
+            text: format!("… {more} more lines truncated"),
+        });
+    }
+    diff
 }
 
 impl PortableTool for WriteFile {
@@ -79,6 +105,24 @@ impl PortableTool for WriteFile {
         };
         let existed = old_size.is_some();
 
+        // Read and diff before asking for approval (§ write_file diff), not after, so the
+        // approval modal can show the human the same before/after the transcript preview shows
+        // later — nothing about computing this depends on the write having happened. Best-effort:
+        // a non-existent file diffs against `""`; a pre-existing file that's unreadable as UTF-8,
+        // or too large to be worth diffing, just yields no preview — the write itself never
+        // depends on this succeeding.
+        let old_content = if existed {
+            match old_size {
+                Some(size) if size <= self.ctx.max_output_bytes as u64 => {
+                    tokio::fs::read_to_string(&path).await.ok()
+                }
+                _ => None,
+            }
+        } else {
+            Some(String::new())
+        };
+        let diff = old_content.map(|old| build_diff(&old, &args.content));
+
         let approvals = self.ctx.approvals.as_ref().ok_or_else(|| {
             ToolFailure::Denied(
                 "no approval channel available in this frontend; writes require interactive \
@@ -96,6 +140,7 @@ impl PortableTool for WriteFile {
                     args.path
                 ),
                 path: Some(path.clone()),
+                diff: diff.clone(),
             })
             .await;
         if !granted {
@@ -104,21 +149,6 @@ impl PortableTool for WriteFile {
                 args.path
             )));
         }
-
-        // Read for the TUI's display-only diff preview (§ write_file diff) before the write
-        // clobbers it. Best-effort: a non-existent file diffs against `""`; a pre-existing file
-        // that's unreadable as UTF-8, or too large to be worth diffing, just yields no preview —
-        // the write itself never depends on this succeeding.
-        let old_content = if existed {
-            match old_size {
-                Some(size) if size <= self.ctx.max_output_bytes as u64 => {
-                    tokio::fs::read_to_string(&path).await.ok()
-                }
-                _ => None,
-            }
-        } else {
-            Some(String::new())
-        };
 
         tokio::fs::write(&path, args.content.as_bytes())
             .await
@@ -138,26 +168,7 @@ impl PortableTool for WriteFile {
             },
         ));
 
-        if let Some(old) = old_content {
-            let mut diff: Vec<DiffLine> = TextDiff::from_lines(&old, &args.content)
-                .iter_all_changes()
-                .map(|change| DiffLine {
-                    tag: match change.tag() {
-                        ChangeTag::Insert => DiffTag::Insert,
-                        ChangeTag::Delete => DiffTag::Delete,
-                        ChangeTag::Equal => DiffTag::Equal,
-                    },
-                    text: change.to_string_lossy().trim_end_matches('\n').to_string(),
-                })
-                .collect();
-            if diff.len() > MAX_DIFF_LINES {
-                let more = diff.len() - MAX_DIFF_LINES;
-                diff.truncate(MAX_DIFF_LINES);
-                diff.push(DiffLine {
-                    tag: DiffTag::Equal,
-                    text: format!("… {more} more lines truncated"),
-                });
-            }
+        if let Some(diff) = diff {
             let _ = self.ctx.activity.try_send((
                 self.ctx.agent,
                 ToolActivity::FileDiff {
@@ -240,6 +251,25 @@ mod tests {
 
     fn denying() -> Arc<dyn mate_tool_api::Approvals> {
         Arc::new(StubApprovals(AtomicBool::new(false)))
+    }
+
+    /// Records the last `ApprovalRequest` it was asked to decide, so a test can inspect what
+    /// the human would have seen — always grants, since these tests care about the request's
+    /// shape, not the decision.
+    struct RecordingApprovals(std::sync::Mutex<Option<ApprovalRequest>>);
+
+    impl RecordingApprovals {
+        fn new() -> Self {
+            Self(std::sync::Mutex::new(None))
+        }
+    }
+
+    #[async_trait]
+    impl mate_tool_api::Approvals for RecordingApprovals {
+        async fn request(&self, request: ApprovalRequest) -> bool {
+            *self.0.lock().unwrap() = Some(request);
+            true
+        }
     }
 
     #[tokio::test]
@@ -442,6 +472,49 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(err, ToolFailure::Denied(_)));
+    }
+
+    #[tokio::test]
+    async fn the_approval_request_carries_the_diff_before_the_write_happens() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        std::fs::write(root.join("a.txt"), "one\ntwo").unwrap();
+        let approvals = Arc::new(RecordingApprovals::new());
+        let dyn_approvals: Arc<dyn mate_tool_api::Approvals> = approvals.clone();
+
+        let tool = WriteFile::new(ctx(root.clone(), Some(dyn_approvals)));
+        tool.call(WriteFileArgs {
+            path: "a.txt".to_string(),
+            content: "one\nTWO".to_string(),
+        })
+        .await
+        .unwrap();
+
+        let request = approvals
+            .0
+            .lock()
+            .unwrap()
+            .take()
+            .expect("write_file must ask for approval");
+        assert_eq!(
+            request.diff,
+            Some(vec![
+                DiffLine {
+                    tag: DiffTag::Equal,
+                    text: "one".to_string(),
+                },
+                DiffLine {
+                    tag: DiffTag::Delete,
+                    text: "two".to_string(),
+                },
+                DiffLine {
+                    tag: DiffTag::Insert,
+                    text: "TWO".to_string(),
+                },
+            ]),
+            "the approval request must carry the same before/after diff the human is asked to \
+             review, computed from the file's state before the write, not after"
+        );
     }
 
     #[tokio::test]

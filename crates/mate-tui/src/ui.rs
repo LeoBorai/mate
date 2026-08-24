@@ -131,6 +131,11 @@ pub(crate) struct ApprovalModalView<'a> {
     pub(crate) detail: &'a str,
     pub(crate) queued: usize,
     pub(crate) allow_dir: Option<String>,
+    /// `write_file`'s before/after diff (§ write_file diff before applying), syntax-highlighted
+    /// spans already computed by `crate::highlight::ApprovalPreviewCache` — `None` for a request
+    /// with nothing to diff. Rendered above the options, capped to
+    /// [`APPROVAL_DIFF_MAX_ROWS`] so one huge write can't push the option list off screen.
+    pub(crate) diff: Option<&'a [Vec<Span<'static>>]>,
     pub(crate) selected: usize,
 }
 
@@ -198,6 +203,12 @@ fn render_detail_modal(f: &mut Frame<'_>, area: Rect, modal: &DetailModalView<'_
     f.render_widget(Paragraph::new(lines), inner);
 }
 
+/// Cap on diff rows shown inside the approval modal itself (§ write_file diff before applying) —
+/// distinct from `write_file`'s own `MAX_DIFF_LINES`, which bounds what's sent over the wire at
+/// all. This one keeps a huge write's modal from pushing the Allow/Disallow options off screen;
+/// the full diff is still available afterward via the transcript's `Ctrl+O` preview.
+const APPROVAL_DIFF_MAX_ROWS: usize = 16;
+
 /// `M13-6`'s approval modal: a closed set of choices (§7.4, no free text) rendered as a small
 /// menu — `↑`/`↓` (`App::handle_approval_key`) moves `modal.selected` over
 /// [`ApprovalOption::ALL`], `Enter` confirms whichever row is highlighted, `Esc` is a shortcut
@@ -205,13 +216,23 @@ fn render_detail_modal(f: &mut Frame<'_>, area: Rect, modal: &DetailModalView<'_
 /// in parens when the request carries one, so the directory it would remember is visible
 /// before it's chosen, not just after. Same popup shape as
 /// [`render_spawn_form`]/[`render_detail_modal`], styled with a yellow border so it reads as
-/// "needs a decision" rather than just another info popup.
+/// "needs a decision" rather than just another info popup. When `modal.diff` is set (§ write_file
+/// diff before applying), the diff renders syntax-highlighted between the detail line and the
+/// options, capped at `APPROVAL_DIFF_MAX_ROWS`.
 fn render_approval_modal(f: &mut Frame<'_>, area: Rect, modal: &ApprovalModalView<'_>) {
-    let width = area.width.saturating_sub(4).clamp(30, 64);
-    // name + detail + blank, an optional queued-count line, a blank separator, then one line
-    // per `ApprovalOption`, plus the top/bottom border.
+    let diff_shown = modal.diff.map(|d| d.len().min(APPROVAL_DIFF_MAX_ROWS));
+    let diff_truncated = modal.diff.is_some_and(|d| d.len() > APPROVAL_DIFF_MAX_ROWS);
+    let width = if modal.diff.is_some() {
+        area.width.saturating_sub(4).clamp(30, 96)
+    } else {
+        area.width.saturating_sub(4).clamp(30, 64)
+    };
+    // name + detail + blank, an optional diff block (rows + blank + optional truncation notice),
+    // an optional queued-count line, a blank separator, then one line per `ApprovalOption`, plus
+    // the top/bottom border.
+    let diff_block = diff_shown.map_or(0, |n| n as u16 + 1 + u16::from(diff_truncated));
     let queued_line = if modal.queued > 0 { 1 } else { 0 };
-    let height = 3 + queued_line + 1 + ApprovalOption::ALL.len() as u16 + 2;
+    let height = 3 + diff_block + queued_line + 1 + ApprovalOption::ALL.len() as u16 + 2;
     let popup = centered_rect(width, height, area);
 
     f.render_widget(Clear, popup);
@@ -233,6 +254,22 @@ fn render_approval_modal(f: &mut Frame<'_>, area: Rect, modal: &ApprovalModalVie
         Line::from(modal.detail.to_string()),
         Line::from(""),
     ];
+    if let Some(diff) = modal.diff {
+        lines.extend(
+            diff.iter()
+                .take(APPROVAL_DIFF_MAX_ROWS)
+                .cloned()
+                .map(Line::from),
+        );
+        if diff_truncated {
+            let hidden = diff.len() - APPROVAL_DIFF_MAX_ROWS;
+            lines.push(Line::from(Span::styled(
+                format!("… {hidden} more line(s) — see transcript after"),
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+        lines.push(Line::from(""));
+    }
     if modal.queued > 0 {
         lines.push(Line::from(format!(
             "({} more approval{} waiting)",

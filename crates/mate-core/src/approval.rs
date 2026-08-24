@@ -122,6 +122,7 @@ impl Approvals for SessionApprovalHub {
                     name: request.name,
                     detail: request.detail,
                     path: request.path,
+                    diff: request.diff,
                 },
             },
         );
@@ -157,6 +158,7 @@ mod tests {
             name: "http_request".to_string(),
             detail: "POST https://example.com".to_string(),
             path: None,
+            diff: None,
         }
     }
 
@@ -166,6 +168,7 @@ mod tests {
             name: "write_file".to_string(),
             detail: "create a.txt".to_string(),
             path: Some(path),
+            diff: None,
         }
     }
 
