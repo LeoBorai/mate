@@ -1,17 +1,21 @@
-//! `write_file`'s diff preview (§ write_file diff): turns a [`ToolPreview`] (one diff line per
-//! source line) into ratatui spans — syntax-highlighted via `synoptic` where the file's
-//! extension is recognized, with a green/red background marking added/removed lines. Computed
-//! once per transcript entry and cached, the same "compute on first render, reuse after" shape
-//! [`crate::wrap::WrapCache`] uses for everything else — the diff/path never change once
-//! `Transcript::attach_preview` sets them, so there's no invalidation to wire up beyond `/clear`
-//! dropping the whole cache.
+//! `write_file`'s diff preview (§ write_file diff): turns a diff (one [`DiffLine`] per source
+//! line) into ratatui spans — syntax-highlighted via `synoptic` where the file's extension is
+//! recognized, with a green/red background marking added/removed lines. Two callers share the
+//! same [`build_rows`]: [`PreviewCache`] for the transcript's post-write preview, keyed by
+//! transcript entry id, and [`ApprovalPreviewCache`] for the pre-write approval modal
+//! (§ write_file diff before applying), keyed by the request's own id. Both cache with the same
+//! "compute on first render, reuse after" shape [`crate::wrap::WrapCache`] uses for everything
+//! else — a given diff never changes once it's attached, so there's no invalidation to wire up
+//! beyond `/clear` (or, for the approval cache, the request being resolved).
 
 use std::collections::HashMap;
+use std::path::Path;
 
-use mate_tool_api::DiffTag;
+use mate_tool_api::{DiffLine, DiffTag};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 use synoptic::TokOpt;
+use ulid::Ulid;
 
 use crate::transcript::{EntryId, ToolPreview};
 
@@ -32,25 +36,47 @@ impl PreviewCache {
     /// Content spans only — no gutter prefix; that's `ui.rs`'s job, the same split the plain
     /// `styled_line` path uses. One `Vec<Span>` per diff line.
     pub(crate) fn rows(&mut self, id: EntryId, preview: &ToolPreview) -> &[Vec<Span<'static>>] {
-        self.cached.entry(id).or_insert_with(|| build_rows(preview))
+        self.cached
+            .entry(id)
+            .or_insert_with(|| build_rows(&preview.path, &preview.diff))
     }
 }
 
-fn build_rows(preview: &ToolPreview) -> Vec<Vec<Span<'static>>> {
-    let ext = preview
-        .path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
+/// One pending approval's diff, rendered for the approval modal (§ write_file diff before
+/// applying) — a single-entry cache rather than a `HashMap` since only the queue's front request
+/// is ever shown at once. Recomputes on any id change, including moving on to the next queued
+/// request.
+pub(crate) struct ApprovalPreviewCache {
+    cached: Option<(Ulid, Vec<Vec<Span<'static>>>)>,
+}
+
+impl ApprovalPreviewCache {
+    pub(crate) fn new() -> Self {
+        Self { cached: None }
+    }
+
+    pub(crate) fn rows(
+        &mut self,
+        id: Ulid,
+        path: &Path,
+        diff: &[DiffLine],
+    ) -> &[Vec<Span<'static>>] {
+        if self.cached.as_ref().map(|(cached_id, _)| *cached_id) != Some(id) {
+            self.cached = Some((id, build_rows(path, diff)));
+        }
+        &self.cached.as_ref().expect("just set above").1
+    }
+}
+
+fn build_rows(path: &Path, diff: &[DiffLine]) -> Vec<Vec<Span<'static>>> {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     let mut highlighter = synoptic::from_extension(ext, 4);
-    let lines: Vec<String> = preview.diff.iter().map(|d| d.text.clone()).collect();
+    let lines: Vec<String> = diff.iter().map(|d| d.text.clone()).collect();
     if let Some(h) = highlighter.as_mut() {
         h.run(&lines);
     }
 
-    preview
-        .diff
-        .iter()
+    diff.iter()
         .enumerate()
         .map(|(i, d)| {
             let bg = match d.tag {
