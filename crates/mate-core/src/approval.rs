@@ -81,7 +81,10 @@ impl SessionApprovalHub {
     /// never reaches this, since the TUI only ever sends the two paired.
     pub fn resolve(&self, id: Ulid, granted: bool, remember: Option<PathBuf>) -> bool {
         if granted && let Some(dir) = remember {
-            self.always_allowed.lock().expect("not poisoned").insert(dir);
+            self.always_allowed
+                .lock()
+                .expect("not poisoned")
+                .insert(dir);
         }
         match self.pending.lock().expect("not poisoned").remove(&id) {
             Some(tx) => {
@@ -257,7 +260,10 @@ mod tests {
                     .await
             })
         };
-        let event = events_rx.recv().await.expect("first request must emit an event");
+        let event = events_rx
+            .recv()
+            .await
+            .expect("first request must emit an event");
         let AgentEvent::ApprovalRequired { id, path, .. } = event.event else {
             panic!("expected ApprovalRequired");
         };
@@ -274,7 +280,10 @@ mod tests {
         let granted = hub
             .request(write_request(AgentId::ROOT, dir.join("b.txt")))
             .await;
-        assert!(granted, "a path under a remembered directory must auto-grant");
+        assert!(
+            granted,
+            "a path under a remembered directory must auto-grant"
+        );
         assert!(
             events_rx.try_recv().is_err(),
             "an auto-granted request must not emit a second ApprovalRequired event"
@@ -296,7 +305,10 @@ mod tests {
                     .await
             })
         };
-        let event = events_rx.recv().await.expect("first request must emit an event");
+        let event = events_rx
+            .recv()
+            .await
+            .expect("first request must emit an event");
         let AgentEvent::ApprovalRequired { id, .. } = event.event else {
             panic!("expected ApprovalRequired");
         };

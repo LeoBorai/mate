@@ -2079,11 +2079,17 @@ mod tests {
 
         app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
             .await;
-        assert_eq!(app.tabs[0].approval_selection, 1, "Down must move to Disallow");
+        assert_eq!(
+            app.tabs[0].approval_selection, 1,
+            "Down must move to Disallow"
+        );
 
         app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
             .await;
-        assert_eq!(app.tabs[0].approval_selection, 2, "Down must move to Always Allow");
+        assert_eq!(
+            app.tabs[0].approval_selection, 2,
+            "Down must move to Always Allow"
+        );
 
         app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
             .await;

@@ -3,7 +3,9 @@
 //! filesystem, so every call is gated through [`ToolCtx::approvals`] (§7.4) before anything
 //! touches disk — there is no unattended write path.
 
-use mate_tool_api::{ApprovalRequest, FileOp, ToolActivity, ToolCtx, ToolFailure, enforce_max_size};
+use mate_tool_api::{
+    ApprovalRequest, FileOp, ToolActivity, ToolCtx, ToolFailure, enforce_max_size,
+};
 use rig::tool::{PortableTool, ToolExecutionError};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -101,7 +103,11 @@ impl PortableTool for WriteFile {
             self.ctx.agent,
             ToolActivity::FileTouched {
                 path: path.clone(),
-                op: if existed { FileOp::Write } else { FileOp::Create },
+                op: if existed {
+                    FileOp::Write
+                } else {
+                    FileOp::Create
+                },
                 lines: args.content.lines().count(),
                 bytes: args.content.len(),
             },
@@ -119,8 +125,8 @@ impl PortableTool for WriteFile {
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use tokio_util::sync::CancellationToken;
 
     struct StubApprovals(AtomicBool);
@@ -195,7 +201,10 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(std::fs::read_to_string(root.join("new.txt")).unwrap(), "hello");
+        assert_eq!(
+            std::fs::read_to_string(root.join("new.txt")).unwrap(),
+            "hello"
+        );
     }
 
     #[tokio::test]

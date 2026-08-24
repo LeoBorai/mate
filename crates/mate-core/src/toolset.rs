@@ -205,7 +205,13 @@ mod tests {
 
         assert_eq!(
             names,
-            vec!["find_files", "http_request", "list_dir", "read_file", "write_file"],
+            vec![
+                "find_files",
+                "http_request",
+                "list_dir",
+                "read_file",
+                "write_file"
+            ],
             "spawn_agent must be absent from the toolset when ctx.spawner is None"
         );
     }
@@ -228,7 +234,10 @@ mod tests {
             .collect();
         names.sort();
 
-        assert_eq!(names, vec!["find_files", "list_dir", "read_file", "write_file"]);
+        assert_eq!(
+            names,
+            vec!["find_files", "list_dir", "read_file", "write_file"]
+        );
     }
 
     #[tokio::test]
@@ -306,7 +315,13 @@ mod tests {
         names.sort();
         assert_eq!(
             names,
-            vec!["find_files", "http_request", "list_dir", "read_file", "write_file"]
+            vec![
+                "find_files",
+                "http_request",
+                "list_dir",
+                "read_file",
+                "write_file"
+            ]
         );
     }
 
@@ -315,7 +330,10 @@ mod tests {
         let descriptors = tool_descriptors(false, false, true);
         let mut names: Vec<&str> = descriptors.iter().map(|t| t.name.as_str()).collect();
         names.sort();
-        assert_eq!(names, vec!["find_files", "list_dir", "read_file", "skill", "write_file"]);
+        assert_eq!(
+            names,
+            vec!["find_files", "list_dir", "read_file", "skill", "write_file"]
+        );
     }
 
     #[test]

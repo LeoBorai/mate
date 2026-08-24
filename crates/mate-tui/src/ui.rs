@@ -243,7 +243,10 @@ fn render_approval_modal(f: &mut Frame<'_>, area: Rect, modal: &ApprovalModalVie
             _ => option.label().to_string(),
         };
         let (prefix, style) = if i == modal.selected {
-            ("› ", Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED))
+            (
+                "› ",
+                Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
+            )
         } else {
             ("  ", Style::default())
         };
