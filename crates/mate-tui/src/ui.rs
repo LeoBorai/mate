@@ -116,12 +116,15 @@ pub(crate) struct DetailModalView<'a> {
 
 /// One pending approval request, rendered for the active tab only (`M13-2`) — see
 /// `crate::app::PendingApproval` for how it's built and `crate::app::App::handle_approval_key`
-/// for the `y`/`n`/`Esc` decision this modal captures.
+/// for the `y`/`a`/`n`/`Esc` decision this modal captures. `allow_dir` (`M13-5`), when present,
+/// is the directory `a` would remember — rendered as an extra hint line; absent when the
+/// request carries no filesystem `path` to scope a directory from.
 pub(crate) struct ApprovalModalView<'a> {
     pub(crate) agent_label: &'a str,
     pub(crate) name: &'a str,
     pub(crate) detail: &'a str,
     pub(crate) queued: usize,
+    pub(crate) allow_dir: Option<String>,
 }
 
 pub(crate) struct AppView<'a> {
@@ -189,11 +192,13 @@ fn render_detail_modal(f: &mut Frame<'_>, area: Rect, modal: &DetailModalView<'_
 }
 
 /// `M13-2`'s approval modal: a binary, no-free-text decision (§7.4) — `y` grants, `n`/`Esc`
-/// denies. Same popup shape as [`render_spawn_form`]/[`render_detail_modal`], styled with a
-/// yellow border so it reads as "needs a decision" rather than just another info popup.
+/// denies; `M13-5` adds `a` to grant and remember `allow_dir` for the rest of the session, when
+/// the request carries one. Same popup shape as [`render_spawn_form`]/[`render_detail_modal`],
+/// styled with a yellow border so it reads as "needs a decision" rather than just another info
+/// popup.
 fn render_approval_modal(f: &mut Frame<'_>, area: Rect, modal: &ApprovalModalView<'_>) {
     let width = area.width.saturating_sub(4).clamp(30, 64);
-    let height = 6;
+    let height = if modal.allow_dir.is_some() { 7 } else { 6 };
     let popup = centered_rect(width, height, area);
 
     f.render_widget(Clear, popup);
@@ -222,7 +227,12 @@ fn render_approval_modal(f: &mut Frame<'_>, area: Rect, modal: &ApprovalModalVie
             if modal.queued == 1 { "" } else { "s" }
         )));
     }
-    lines.push(Line::from("y grant · n/Esc deny"));
+    match &modal.allow_dir {
+        Some(dir) => {
+            lines.push(Line::from(format!("y grant · a always allow {dir} · n/Esc deny")));
+        }
+        None => lines.push(Line::from("y grant · n/Esc deny")),
+    }
     f.render_widget(Paragraph::new(lines), inner);
 }
 

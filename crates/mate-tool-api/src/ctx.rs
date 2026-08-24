@@ -67,6 +67,54 @@ impl ToolCtx {
 
         Ok(canon)
     }
+
+    /// Resolves a model-supplied path for writing: like [`Self::resolve`], but the target
+    /// itself need not exist yet — only its containing directory does, since [`Self::resolve`]
+    /// canonicalizing the full candidate would reject every not-yet-created file as not
+    /// found. Jails the same way: canonicalize the containing directory (so `../` traversal or
+    /// a symlinked ancestor resolves to its real location before the boundary check), require
+    /// it under `root`, then build the final path from there. If *anything* already sits at
+    /// that name — including a symlink whose own destination doesn't exist yet, checked via
+    /// [`std::fs::symlink_metadata`] rather than [`std::fs::metadata`] specifically so a
+    /// dangling symlink still counts as "something's there" — canonicalize *that* too and
+    /// re-check the jail: writing through a symlink follows it, so a symlink that can't be
+    /// verified safe (denylisted, outside root, or dangling) is denied rather than silently
+    /// treated as a fresh file at the symlink's own path.
+    pub fn resolve_for_write(&self, user_path: &str) -> Result<PathBuf, ToolFailure> {
+        let candidate = self.root.join(user_path);
+        let file_name = candidate
+            .file_name()
+            .ok_or_else(|| ToolFailure::InvalidArgs(format!("not a file path: {user_path}")))?
+            .to_owned();
+        let parent = candidate
+            .parent()
+            .ok_or_else(|| ToolFailure::InvalidArgs(format!("not a file path: {user_path}")))?;
+
+        let canon_parent = dunce::canonicalize(parent)
+            .map_err(|_| ToolFailure::NotFound(user_path.to_string()))?;
+        if !canon_parent.starts_with(&self.root) || is_denylisted(&canon_parent) {
+            return Err(ToolFailure::Denied(user_path.to_string()));
+        }
+
+        let target = canon_parent.join(&file_name);
+        let final_path = match std::fs::symlink_metadata(&target) {
+            Ok(_) => {
+                let canon_target = dunce::canonicalize(&target)
+                    .map_err(|_| ToolFailure::Denied(user_path.to_string()))?;
+                if !canon_target.starts_with(&self.root) {
+                    return Err(ToolFailure::Denied(user_path.to_string()));
+                }
+                canon_target
+            }
+            Err(_) => target,
+        };
+
+        if is_denylisted(&final_path) {
+            return Err(ToolFailure::Denied(user_path.to_string()));
+        }
+
+        Ok(final_path)
+    }
 }
 
 /// Fixed policy denylist (§8.1): secrets and VCS internals are never readable, in-jail or
@@ -188,5 +236,99 @@ mod tests {
 
         let err = ctx(root).resolve("does/not/exist.txt").unwrap_err();
         assert!(matches!(err, ToolFailure::NotFound(_)));
+    }
+
+    #[test]
+    fn resolve_for_write_allows_a_not_yet_existing_file_in_an_existing_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+
+        let resolved = ctx(root.clone()).resolve_for_write("new.txt").unwrap();
+        assert_eq!(resolved, root.join("new.txt"));
+    }
+
+    #[test]
+    fn resolve_for_write_allows_overwriting_an_existing_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        fs::write(root.join("a.txt"), "old").unwrap();
+
+        let resolved = ctx(root.clone()).resolve_for_write("a.txt").unwrap();
+        assert_eq!(resolved, root.join("a.txt"));
+    }
+
+    #[test]
+    fn resolve_for_write_rejects_a_missing_parent_directory_as_not_found() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+
+        let err = ctx(root)
+            .resolve_for_write("does/not/exist.txt")
+            .unwrap_err();
+        assert!(matches!(err, ToolFailure::NotFound(_)));
+    }
+
+    #[test]
+    fn resolve_for_write_rejects_dot_dot_traversal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tmp_root = dunce::canonicalize(tmp.path()).unwrap();
+        let workspace = tmp_root.join("workspace");
+        fs::create_dir(&workspace).unwrap();
+        fs::create_dir(tmp_root.join("outside")).unwrap();
+
+        let err = ctx(workspace)
+            .resolve_for_write("../outside/new.txt")
+            .unwrap_err();
+        assert!(matches!(err, ToolFailure::Denied(_)));
+    }
+
+    #[test]
+    fn resolve_for_write_rejects_denylisted_names_even_when_not_yet_created() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+
+        let c = ctx(root);
+        for path in [".env", "id_rsa", "new.pem"] {
+            let err = c.resolve_for_write(path).unwrap_err();
+            assert!(
+                matches!(err, ToolFailure::Denied(_)),
+                "{path} should be denied even though it doesn't exist yet"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_for_write_rejects_a_symlink_pointing_at_an_existing_outside_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tmp_root = dunce::canonicalize(tmp.path()).unwrap();
+        let workspace = tmp_root.join("workspace");
+        let outside = tmp_root.join("outside");
+        fs::create_dir(&workspace).unwrap();
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("secret.txt"), "s3cr3t").unwrap();
+        std::os::unix::fs::symlink(outside.join("secret.txt"), workspace.join("link")).unwrap();
+
+        let err = ctx(workspace).resolve_for_write("link").unwrap_err();
+        assert!(matches!(err, ToolFailure::Denied(_)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_for_write_rejects_a_dangling_symlink_pointing_outside_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tmp_root = dunce::canonicalize(tmp.path()).unwrap();
+        let workspace = tmp_root.join("workspace");
+        let outside = tmp_root.join("outside");
+        fs::create_dir(&workspace).unwrap();
+        fs::create_dir(&outside).unwrap();
+        // The symlink's destination (`outside/target.txt`) is never created — writing through
+        // a dangling symlink must still be denied, not silently treated as a fresh file at the
+        // symlink's own in-jail path (`std::fs::canonicalize` alone can't tell the two apart,
+        // which is exactly why `resolve_for_write` checks `symlink_metadata` first).
+        std::os::unix::fs::symlink(outside.join("target.txt"), workspace.join("link")).unwrap();
+
+        let err = ctx(workspace).resolve_for_write("link").unwrap_err();
+        assert!(matches!(err, ToolFailure::Denied(_)));
     }
 }

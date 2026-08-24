@@ -4,10 +4,13 @@
 //! the session's own event/command channels, and injected into [`crate::ToolCtx`] at
 //! construction.
 //!
-//! Nothing in this crate calls `request` yet — no tool routes a mutating action through it —
-//! but the seam exists now for the same reason `SubagentSpawner` did before `M9` had a real
-//! implementation: a field added to `ToolCtx` later is a breaking change to every call site that
-//! constructs one, a field added now and left `None` in every existing construction is not.
+//! `mate-tool-fs`'s `write_file` is the first caller: every write is gated through `request`
+//! before the file ever touches disk. The seam otherwise predates any producer for the same
+//! reason `SubagentSpawner` did before `M9` had a real implementation: a field added to
+//! `ToolCtx` later is a breaking change to every call site that constructs one, a field added
+//! now and left `None` in every existing construction is not.
+
+use std::path::PathBuf;
 
 use async_trait::async_trait;
 
@@ -16,11 +19,16 @@ use crate::AgentId;
 /// One approval request (§7.4): `agent` is who's asking (root or a subagent, so the UI can
 /// label a subagent's request distinctly — "subagent `deps` wants to POST to …"), `name` is the
 /// tool/action being gated, and `detail` is the human-readable specifics shown alongside it.
+/// `path` carries the resolved, in-jail target of a filesystem action, when there is one — an
+/// `Approvals` implementation can use it to remember a scope (e.g. "always allow writes under
+/// this directory") without that scope ever being free text a human typed, which would be the
+/// back door `detail` alone is deliberately not.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApprovalRequest {
     pub agent: AgentId,
     pub name: String,
     pub detail: String,
+    pub path: Option<PathBuf>,
 }
 
 /// Requests a binary decision on one risky action and blocks until it's made. The answer is

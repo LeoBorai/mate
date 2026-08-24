@@ -40,7 +40,8 @@ pub fn build_toolset(
     let mut builder = ToolServer::new()
         .tool(mate_tool_fs::ReadFile::new(ctx.clone()))
         .tool(mate_tool_fs::ListDir::new(ctx.clone()))
-        .tool(mate_tool_fs::FindFiles::new(ctx.clone()));
+        .tool(mate_tool_fs::FindFiles::new(ctx.clone()))
+        .tool(mate_tool_fs::WriteFile::new(ctx.clone()));
     if http_policy.enabled {
         let allow_localhost = http_policy.policy == HttpAccessPolicy::AllowLocalhost;
         builder = builder.tool(mate_tool_http::HttpRequest::new(
@@ -85,6 +86,12 @@ pub fn tool_descriptors(
             "find_files",
             "Find files under the workspace root matching a glob pattern, e.g. \"**/*.rs\". \
              Respects .gitignore.",
+        ),
+        ToolDescriptor::new(
+            "write_file",
+            "Create or overwrite a file inside the workspace with the given full contents. \
+             The containing directory must already exist. Every write requires human \
+             approval before it happens.",
         ),
     ];
     if http_enabled {
@@ -198,7 +205,7 @@ mod tests {
 
         assert_eq!(
             names,
-            vec!["find_files", "http_request", "list_dir", "read_file"],
+            vec!["find_files", "http_request", "list_dir", "read_file", "write_file"],
             "spawn_agent must be absent from the toolset when ctx.spawner is None"
         );
     }
@@ -221,7 +228,7 @@ mod tests {
             .collect();
         names.sort();
 
-        assert_eq!(names, vec!["find_files", "list_dir", "read_file"]);
+        assert_eq!(names, vec!["find_files", "list_dir", "read_file", "write_file"]);
     }
 
     #[tokio::test]
@@ -247,7 +254,8 @@ mod tests {
                 "http_request",
                 "list_dir",
                 "read_file",
-                "spawn_agent"
+                "spawn_agent",
+                "write_file"
             ],
             "spawn_agent must attach whenever ctx.spawner is Some, regardless of caller"
         );
@@ -273,7 +281,7 @@ mod tests {
 
         assert_eq!(
             names,
-            vec!["find_files", "list_dir", "read_file", "skill"],
+            vec!["find_files", "list_dir", "read_file", "skill", "write_file"],
             "skill must attach whenever ctx.skills is non-empty"
         );
     }
@@ -285,7 +293,7 @@ mod tests {
         names.sort();
         assert_eq!(
             names,
-            vec!["find_files", "list_dir", "read_file"],
+            vec!["find_files", "list_dir", "read_file", "write_file"],
             "descriptors must match build_toolset's own attachment set for may_delegate: false, \
              http_enabled: false, skills_enabled: false"
         );
@@ -298,7 +306,7 @@ mod tests {
         names.sort();
         assert_eq!(
             names,
-            vec!["find_files", "http_request", "list_dir", "read_file"]
+            vec!["find_files", "http_request", "list_dir", "read_file", "write_file"]
         );
     }
 
@@ -307,7 +315,7 @@ mod tests {
         let descriptors = tool_descriptors(false, false, true);
         let mut names: Vec<&str> = descriptors.iter().map(|t| t.name.as_str()).collect();
         names.sort();
-        assert_eq!(names, vec!["find_files", "list_dir", "read_file", "skill"]);
+        assert_eq!(names, vec!["find_files", "list_dir", "read_file", "skill", "write_file"]);
     }
 
     #[test]
@@ -322,7 +330,8 @@ mod tests {
                 "http_request",
                 "list_dir",
                 "read_file",
-                "spawn_agent"
+                "spawn_agent",
+                "write_file"
             ],
             "descriptors must match build_toolset's own attachment set for may_delegate: true, \
              http_enabled: true, skills_enabled: false"

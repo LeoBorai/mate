@@ -107,14 +107,18 @@ pub(crate) struct DetailModal {
     pub(crate) lines: Vec<String>,
 }
 
-/// One outstanding approval request (`M13-2`), queued per tab — `Enter`/`y`/`n` on the front of
-/// the queue is the whole interaction surface (§7.4: binary, no free text). `agent` is who
-/// asked, root or a subagent, so the modal can label it distinctly.
+/// One outstanding approval request (`M13-2`), queued per tab — `y`/`a`/`n`/`Esc` on the front
+/// of the queue is the whole interaction surface (§7.4: binary, no free text). `agent` is who
+/// asked, root or a subagent, so the modal can label it distinctly. `path`, when present
+/// (`M13-5`), is the resolved target of a filesystem action — `a` uses its parent directory as
+/// the scope to remember, so it's absent (and `a` behaves like `y`) for a request with no
+/// single filesystem target.
 pub(crate) struct PendingApproval {
     pub(crate) id: Ulid,
     pub(crate) agent: AgentId,
     pub(crate) name: String,
     pub(crate) detail: String,
+    pub(crate) path: Option<PathBuf>,
 }
 
 /// One tab's live state (`M8-2`). Everything that was a flat field on `App` before `M8` — the
@@ -291,6 +295,14 @@ fn task_title(prompt: &str) -> Option<String> {
     (!first_line.is_empty()).then(|| first_line.to_string())
 }
 
+/// `M13-5`'s "always allow" scope: the parent directory of an approval request's target,
+/// shared by `App::handle_approval_key` (what `a` remembers) and `App::view` (what the modal's
+/// hint line shows) so the two can never drift apart. `None` when the request carries no
+/// `path` — there's nothing to scope a directory from.
+fn allow_dir(path: Option<&std::path::Path>) -> Option<PathBuf> {
+    path.and_then(|p| p.parent()).map(|dir| dir.to_path_buf())
+}
+
 pub struct App {
     manager: SessionManager,
     events: mpsc::Receiver<SessionEvent>,
@@ -397,6 +409,7 @@ impl App {
                 name: &a.name,
                 detail: &a.detail,
                 queued: tab.pending_approvals.len().saturating_sub(1),
+                allow_dir: allow_dir(a.path.as_deref()).map(|dir| dir.display().to_string()),
             });
         AppView {
             tabs,
@@ -477,7 +490,12 @@ impl App {
             // share one per-tab queue, rendered as a modal only while this tab is active
             // (`App::view`). A subagent's request also updates its roster row, since that's
             // the only place a *background subagent's* pending approval is visible at all.
-            AgentEvent::ApprovalRequired { id, name, detail } => {
+            AgentEvent::ApprovalRequired {
+                id,
+                name,
+                detail,
+                path,
+            } => {
                 if event.agent != AgentId::ROOT {
                     tab.roster.awaiting_approval(event.agent);
                 }
@@ -486,6 +504,7 @@ impl App {
                     agent: event.agent,
                     name: name.clone(),
                     detail: detail.clone(),
+                    path: path.clone(),
                 });
                 if !is_active {
                     tab.needs_attention = true;
@@ -883,24 +902,34 @@ impl App {
             .await;
     }
 
-    /// `y`/`n`/`Esc` on the front of the active tab's approval queue (`M13-2`). Any other key
-    /// is ignored (the queue stays exactly as it was) rather than falling through anywhere
-    /// else — while a decision is pending, no other key has a meaning here.
+    /// `y`/`a`/`n`/`Esc` on the front of the active tab's approval queue (`M13-2`, `M13-5`).
+    /// `y` grants once; `a` grants and also remembers the request's target's parent directory
+    /// as "always allow" for the rest of the session (falling back to a plain grant if the
+    /// request carries no `path` — nothing to scope a directory from); `n`/`Esc` deny. Any
+    /// other key is ignored (the queue stays exactly as it was) rather than falling through
+    /// anywhere else — while a decision is pending, no other key has a meaning here.
     async fn handle_approval_key(&mut self, key: KeyEvent) {
         let idx = self.active;
-        let granted = match key.code {
-            KeyCode::Char('y' | 'Y') => true,
-            KeyCode::Char('n' | 'N') | KeyCode::Esc => false,
+        let (granted, remember_scope) = match key.code {
+            KeyCode::Char('y' | 'Y') => (true, false),
+            KeyCode::Char('a' | 'A') => (true, true),
+            KeyCode::Char('n' | 'N') | KeyCode::Esc => (false, false),
             _ => return,
         };
         let Some(approval) = self.tabs[idx].pending_approvals.pop_front() else {
             return;
+        };
+        let remember = if remember_scope {
+            allow_dir(approval.path.as_deref())
+        } else {
+            None
         };
         let _ = self.tabs[idx]
             .handle
             .send(SessionCmd::Approve {
                 id: approval.id,
                 granted,
+                remember,
             })
             .await;
     }
@@ -1903,7 +1932,30 @@ mod tests {
             id,
             name: "http_request".to_string(),
             detail: "POST https://example.com".to_string(),
+            path: None,
         }
+    }
+
+    fn write_approval_required(id: Ulid, path: PathBuf) -> AgentEvent {
+        AgentEvent::ApprovalRequired {
+            id,
+            name: "write_file".to_string(),
+            detail: "create a.txt".to_string(),
+            path: Some(path),
+        }
+    }
+
+    #[test]
+    fn allow_dir_is_the_requests_targets_parent_directory() {
+        assert_eq!(
+            allow_dir(Some(std::path::Path::new("/workspace/src/a.txt"))),
+            Some(PathBuf::from("/workspace/src"))
+        );
+    }
+
+    #[test]
+    fn allow_dir_is_none_for_a_request_with_no_path() {
+        assert_eq!(allow_dir(None), None, "nothing to scope a directory from");
     }
 
     #[tokio::test]
@@ -1954,6 +2006,26 @@ mod tests {
         assert!(
             app.tabs[0].pending_approvals.is_empty(),
             "a decision must pop the request off the queue"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_grants_and_pops_the_front_of_the_queue_the_same_as_y() {
+        let mut app = test_app(1);
+        let session = app.tabs[0].id;
+        let id = Ulid::generate();
+        app.on_session_event(SessionEvent {
+            session,
+            agent: AgentId::ROOT,
+            event: write_approval_required(id, PathBuf::from("/workspace/src/a.txt")),
+        });
+
+        app.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE))
+            .await;
+
+        assert!(
+            app.tabs[0].pending_approvals.is_empty(),
+            "`a` must pop the request off the queue, same as `y`"
         );
     }
 
