@@ -42,12 +42,13 @@ use futures::StreamExt;
 use mate_core::cost::{ModelRate, estimate_cost};
 use mate_core::session::{SessionCmd, SessionEvent, SessionHandle, SessionId, SessionManager};
 use mate_core::streaming::{AgentEvent, UsageRollup};
-use mate_tool_api::{AgentId, SkillMetadata};
+use mate_tool_api::{AgentId, SkillMetadata, ToolActivity};
 use std::collections::{HashMap, VecDeque};
 use tokio::sync::mpsc;
 use tokio::time::{Duration, Interval, MissedTickBehavior, interval};
 use ulid::Ulid;
 
+use crate::highlight::PreviewCache;
 use crate::input::InputBox;
 use crate::panel::Panel;
 use crate::panel_widgets::{PanelFocus, PanelWidgetKind};
@@ -158,6 +159,9 @@ struct SessionTab {
     root: PathBuf,
     transcript: Transcript,
     wrap: WrapCache,
+    /// `write_file` diff previews (§ write_file diff), keyed by transcript entry id — a sibling
+    /// cache to `wrap`, same "computed once, cleared on `/clear`" lifecycle.
+    previews: PreviewCache,
     input: InputBox,
     scroll: usize,
     running_turn: bool,
@@ -226,6 +230,7 @@ impl SessionTab {
             root,
             transcript: Transcript::new(),
             wrap: WrapCache::new(),
+            previews: PreviewCache::new(),
             input: InputBox::new(),
             scroll: 0,
             running_turn: false,
@@ -451,6 +456,7 @@ impl App {
             session: ui::View {
                 transcript: &tab.transcript,
                 wrap: &mut tab.wrap,
+                previews: &mut tab.previews,
                 input: &tab.input,
                 root: &tab.root,
                 panel_visible: tab.panel_visible,
@@ -496,6 +502,11 @@ impl App {
             AgentEvent::Activity(record) => {
                 if event.agent != AgentId::ROOT {
                     tab.roster.note_activity(event.agent, record);
+                } else if let ToolActivity::FileDiff { path, diff } = record {
+                    // Display-only (§ write_file diff): the transcript stays root-only (§9.9)
+                    // even though the panel below shows every agent's activity.
+                    tab.transcript
+                        .attach_preview("write_file", path.clone(), diff.clone());
                 }
                 tab.panel.push(event.agent, record.clone());
                 if !is_active {
@@ -1181,6 +1192,7 @@ impl App {
         let tab = &mut self.tabs[self.active];
         tab.transcript = Transcript::new();
         tab.wrap = WrapCache::new();
+        tab.previews = PreviewCache::new();
         tab.scroll = 0;
     }
 

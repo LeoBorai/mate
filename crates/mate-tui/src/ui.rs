@@ -21,6 +21,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::app::{ApprovalOption, SpawnField};
+use crate::highlight::PreviewCache;
 use crate::input::InputBox;
 use crate::panel::{DocRow, NetRow, SkillRow};
 use crate::panel_widgets::{AgentStatusPanel, PanelFocus, PanelView};
@@ -58,6 +59,9 @@ pub(crate) struct TabSummary {
 pub(crate) struct View<'a> {
     pub(crate) transcript: &'a Transcript,
     pub(crate) wrap: &'a mut WrapCache,
+    /// `write_file` diff previews (§ write_file diff) — a sibling cache to `wrap`, only ever
+    /// populated for `ToolCall` entries carrying `preview: Some(_)`.
+    pub(crate) previews: &'a mut PreviewCache,
     pub(crate) input: &'a InputBox,
     /// Lines scrolled up from the bottom (`M7-1` follow-up) — a `&mut` back into the owning
     /// tab so `render_transcript` can clamp a stale, over-incremented value (mouse wheel held
@@ -637,6 +641,38 @@ fn render_transcript(f: &mut Frame<'_>, area: Rect, view: &mut View<'_>) {
         if lines.len() >= need {
             break;
         }
+        if let Entry::ToolCall {
+            preview: Some(p),
+            ok,
+            expanded: true,
+            name,
+            ..
+        } = entry
+        {
+            // Diff/code lines are already one row per source line — no word-wrap, unlike the
+            // plain path below. An over-width row is left for `Paragraph`'s normal per-line
+            // clipping, same as any other over-width `Line` renders today. A one-line header
+            // (matching the collapsed `"{name} {status}"` text) keeps the tool name/status
+            // visible above the diff rows, the same information the plain path's first wrapped
+            // line would otherwise carry.
+            let status = match ok {
+                None => "…",
+                Some(true) => "ok",
+                Some(false) => "failed",
+            };
+            let rows = view.previews.rows(entry.id(), p);
+            let mut all_rows: Vec<Vec<Span<'static>>> = Vec::with_capacity(rows.len() + 1);
+            all_rows.push(vec![Span::raw(format!("{name} {status}"))]);
+            all_rows.extend(rows.iter().cloned());
+            let (label, style) = tool_call_gutter(ok);
+            for (i, content) in all_rows.iter().enumerate().rev() {
+                lines.push(prefixed_line(label, style, i == 0, content.clone()));
+                if lines.len() >= need {
+                    break;
+                }
+            }
+            continue;
+        }
         let text = render_text(entry);
         let wrapped = view.wrap.wrapped(entry.id(), &text, width).to_vec();
         for (i, raw) in wrapped.iter().enumerate().rev() {
@@ -696,30 +732,47 @@ fn render_text(entry: &Entry) -> String {
     }
 }
 
+/// The gutter glyph + style for a `ToolCall` entry's `⚙`/`✓`/`✗` prefix — shared between
+/// `styled_line`'s plain path and `render_transcript`'s diff-preview path, so both a `ToolCall`
+/// rendered as plain text and one rendered as a diff preview use the same gutter.
+fn tool_call_gutter(ok: &Option<bool>) -> (&'static str, Style) {
+    (
+        match ok {
+            None => "⚙",
+            Some(true) => "✓",
+            Some(false) => "✗",
+        },
+        Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::ITALIC),
+    )
+}
+
 fn styled_line(entry: &Entry, raw: &str, first: bool) -> Line<'static> {
     let (label, style) = match entry {
         Entry::User { .. } => ("you ›", Style::default().fg(Color::Cyan)),
         Entry::Assistant { .. } => ("agent ›", Style::default()),
-        Entry::ToolCall { ok, .. } => (
-            match ok {
-                None => "⚙",
-                Some(true) => "✓",
-                Some(false) => "✗",
-            },
-            Style::default()
-                .fg(Color::DarkGray)
-                .add_modifier(Modifier::ITALIC),
-        ),
+        Entry::ToolCall { ok, .. } => tool_call_gutter(ok),
         Entry::SystemError { .. } => ("!", Style::default().fg(Color::Red)),
         Entry::System { .. } => ("*", Style::default().fg(Color::Yellow)),
     };
+    prefixed_line(label, style, first, vec![Span::raw(raw.to_string())])
+}
+
+/// Builds one rendered row: the gutter prefix (only on `first`, blank padding otherwise, so
+/// wrapped/diff body lines line up under it) followed by `content`'s own spans.
+fn prefixed_line(
+    label: &str,
+    style: Style,
+    first: bool,
+    content: Vec<Span<'static>>,
+) -> Line<'static> {
     let prefix = if first {
         format!("{label:<width$}", width = PREFIX_WIDTH as usize)
     } else {
         " ".repeat(PREFIX_WIDTH as usize)
     };
-    Line::from(vec![
-        Span::styled(prefix, style),
-        Span::raw(raw.to_string()),
-    ])
+    let mut spans = vec![Span::styled(prefix, style)];
+    spans.extend(content);
+    Line::from(spans)
 }

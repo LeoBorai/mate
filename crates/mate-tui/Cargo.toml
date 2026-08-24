@@ -13,6 +13,7 @@ mate-tool-api = { workspace = true }
 mate-tool-skills = { workspace = true }
 ratatui = { workspace = true }
 ratatui-textarea = { workspace = true }
+synoptic = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }

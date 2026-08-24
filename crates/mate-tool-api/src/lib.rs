@@ -15,7 +15,7 @@ mod ids;
 mod skills;
 mod subagent;
 
-pub use activity::{ActivitySink, FileOp, ToolActivity};
+pub use activity::{ActivitySink, DiffLine, DiffTag, FileOp, ToolActivity};
 pub use agents_md::AgentsMdSource;
 pub use approval::{ApprovalRequest, Approvals};
 pub use ctx::ToolCtx;

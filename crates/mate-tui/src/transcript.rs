@@ -3,11 +3,23 @@
 //! `Ctrl+O` expands the most recent one (§9.9).
 
 use std::collections::VecDeque;
+use std::path::PathBuf;
+
+use mate_tool_api::DiffLine;
 
 /// Scrollback cap (`M7-3`'s "10k entries stay responsive") — oldest entries evicted past this.
 const MAX_ENTRIES: usize = 10_000;
 
 pub type EntryId = u64;
+
+/// A `write_file` call's before/after diff (§ write_file diff preview), attached to its
+/// `ToolCall` entry once the tool's `ToolActivity::FileDiff` record arrives — separate from
+/// `summary`, which stays whatever the tool actually returned to the model.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolPreview {
+    pub path: PathBuf,
+    pub diff: Vec<DiffLine>,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Entry {
@@ -25,6 +37,9 @@ pub enum Entry {
         ok: Option<bool>,
         summary: String,
         expanded: bool,
+        /// `write_file`'s diff preview (§ write_file diff), display-only — `None` for every
+        /// other tool, and for a `write_file` call until its `FileDiff` activity record lands.
+        preview: Option<ToolPreview>,
     },
     SystemError {
         id: EntryId,
@@ -138,6 +153,7 @@ impl Transcript {
             ok: None,
             summary: String::new(),
             expanded: false,
+            preview: None,
         })
     }
 
@@ -157,6 +173,22 @@ impl Transcript {
         {
             *slot_ok = Some(ok);
             *slot_summary = summary;
+        }
+    }
+
+    /// Attaches a `write_file` diff preview to the nearest still-pending call matching `name`,
+    /// the same lookup `resolve_tool_call` uses — the `FileDiff` activity record always arrives
+    /// before the tool's own `ToolResult` (it's sent from inside the tool's `call()`, before it
+    /// returns), so the entry is guaranteed still `ok: None` at this point. A no-op if no such
+    /// entry exists (e.g. the record raced past a `MAX_ENTRIES` eviction).
+    pub fn attach_preview(&mut self, name: &str, path: PathBuf, diff: Vec<DiffLine>) {
+        if let Some(Entry::ToolCall { preview, .. }) = self
+            .entries
+            .iter_mut()
+            .rev()
+            .find(|e| matches!(e, Entry::ToolCall { name: n, ok: None, .. } if n == name))
+        {
+            *preview = Some(ToolPreview { path, diff });
         }
     }
 
@@ -261,6 +293,42 @@ mod tests {
                 ..
             } if summary == "contents"
         ));
+    }
+
+    #[test]
+    fn attach_preview_fills_in_the_nearest_pending_call_by_name() {
+        let mut t = Transcript::new();
+        t.push_tool_call("write_file".to_string());
+        t.attach_preview(
+            "write_file",
+            PathBuf::from("a.txt"),
+            vec![DiffLine {
+                tag: mate_tool_api::DiffTag::Insert,
+                text: "one".to_string(),
+            }],
+        );
+
+        let entry = t.iter().next().unwrap();
+        assert!(matches!(
+            entry,
+            Entry::ToolCall {
+                preview: Some(ToolPreview { path, diff }),
+                ..
+            } if path == &PathBuf::from("a.txt") && diff.len() == 1
+        ));
+    }
+
+    #[test]
+    fn attach_preview_is_a_no_op_when_no_pending_call_matches_the_name() {
+        let mut t = Transcript::new();
+        t.push_tool_call("read_file".to_string());
+        t.attach_preview("write_file", PathBuf::from("a.txt"), vec![]);
+
+        let entry = t.iter().next().unwrap();
+        assert!(
+            matches!(entry, Entry::ToolCall { preview: None, .. }),
+            "a diff for a different tool name must never attach to an unrelated pending call"
+        );
     }
 
     #[test]

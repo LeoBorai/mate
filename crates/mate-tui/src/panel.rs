@@ -123,6 +123,9 @@ impl Panel {
                 self.documents.truncate(RING_CAPACITY);
             }
             ToolActivity::Note { .. } => {}
+            // Transcript-only (§ write_file diff preview) — the DOCUMENTS log already has this
+            // write via the `FileTouched` record sent alongside it.
+            ToolActivity::FileDiff { .. } => {}
             ToolActivity::SkillLoaded { name } => {
                 if let Some(row) = self.skills.iter_mut().find(|s| s.name == name) {
                     row.active = true;
