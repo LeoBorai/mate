@@ -20,7 +20,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
-use crate::app::SpawnField;
+use crate::app::{ApprovalOption, SpawnField};
 use crate::input::InputBox;
 use crate::panel::{DocRow, NetRow, SkillRow};
 use crate::panel_widgets::{AgentStatusPanel, PanelFocus, PanelView};
@@ -115,16 +115,19 @@ pub(crate) struct DetailModalView<'a> {
 }
 
 /// One pending approval request, rendered for the active tab only (`M13-2`) — see
-/// `crate::app::PendingApproval` for how it's built and `crate::app::App::handle_approval_key`
-/// for the `y`/`a`/`n`/`Esc` decision this modal captures. `allow_dir` (`M13-5`), when present,
-/// is the directory `a` would remember — rendered as an extra hint line; absent when the
-/// request carries no filesystem `path` to scope a directory from.
+/// `crate::app::PendingApproval` for how it's built and `crate::app::App::handle_approval_key`/
+/// `crate::app::App::resolve_approval` for the `↑`/`↓`/`Enter` decision this modal captures
+/// (`M13-6`). `selected` indexes `ApprovalOption::ALL` — the currently highlighted row.
+/// `allow_dir` (`M13-5`), when present, is the directory `ApprovalOption::AlwaysAllow` would
+/// remember — appended to that option's own label; absent when the request carries no
+/// filesystem `path` to scope a directory from.
 pub(crate) struct ApprovalModalView<'a> {
     pub(crate) agent_label: &'a str,
     pub(crate) name: &'a str,
     pub(crate) detail: &'a str,
     pub(crate) queued: usize,
     pub(crate) allow_dir: Option<String>,
+    pub(crate) selected: usize,
 }
 
 pub(crate) struct AppView<'a> {
@@ -191,14 +194,20 @@ fn render_detail_modal(f: &mut Frame<'_>, area: Rect, modal: &DetailModalView<'_
     f.render_widget(Paragraph::new(lines), inner);
 }
 
-/// `M13-2`'s approval modal: a binary, no-free-text decision (§7.4) — `y` grants, `n`/`Esc`
-/// denies; `M13-5` adds `a` to grant and remember `allow_dir` for the rest of the session, when
-/// the request carries one. Same popup shape as [`render_spawn_form`]/[`render_detail_modal`],
-/// styled with a yellow border so it reads as "needs a decision" rather than just another info
-/// popup.
+/// `M13-6`'s approval modal: a closed set of choices (§7.4, no free text) rendered as a small
+/// menu — `↑`/`↓` (`App::handle_approval_key`) moves `modal.selected` over
+/// [`ApprovalOption::ALL`], `Enter` confirms whichever row is highlighted, `Esc` is a shortcut
+/// straight to `Disallow`. [`ApprovalOption::AlwaysAllow`]'s own row gets `allow_dir` appended
+/// in parens when the request carries one, so the directory it would remember is visible
+/// before it's chosen, not just after. Same popup shape as
+/// [`render_spawn_form`]/[`render_detail_modal`], styled with a yellow border so it reads as
+/// "needs a decision" rather than just another info popup.
 fn render_approval_modal(f: &mut Frame<'_>, area: Rect, modal: &ApprovalModalView<'_>) {
     let width = area.width.saturating_sub(4).clamp(30, 64);
-    let height = if modal.allow_dir.is_some() { 7 } else { 6 };
+    // name + detail + blank, an optional queued-count line, a blank separator, then one line
+    // per `ApprovalOption`, plus the top/bottom border.
+    let queued_line = if modal.queued > 0 { 1 } else { 0 };
+    let height = 3 + queued_line + 1 + ApprovalOption::ALL.len() as u16 + 2;
     let popup = centered_rect(width, height, area);
 
     f.render_widget(Clear, popup);
@@ -227,11 +236,18 @@ fn render_approval_modal(f: &mut Frame<'_>, area: Rect, modal: &ApprovalModalVie
             if modal.queued == 1 { "" } else { "s" }
         )));
     }
-    match &modal.allow_dir {
-        Some(dir) => {
-            lines.push(Line::from(format!("y grant · a always allow {dir} · n/Esc deny")));
-        }
-        None => lines.push(Line::from("y grant · n/Esc deny")),
+    lines.push(Line::from(""));
+    for (i, option) in ApprovalOption::ALL.into_iter().enumerate() {
+        let label = match (option, &modal.allow_dir) {
+            (ApprovalOption::AlwaysAllow, Some(dir)) => format!("Always Allow ({dir})"),
+            _ => option.label().to_string(),
+        };
+        let (prefix, style) = if i == modal.selected {
+            ("› ", Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED))
+        } else {
+            ("  ", Style::default())
+        };
+        lines.push(Line::from(Span::styled(format!("{prefix}{label}"), style)));
     }
     f.render_widget(Paragraph::new(lines), inner);
 }

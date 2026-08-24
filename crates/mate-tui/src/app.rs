@@ -107,18 +107,41 @@ pub(crate) struct DetailModal {
     pub(crate) lines: Vec<String>,
 }
 
-/// One outstanding approval request (`M13-2`), queued per tab — `y`/`a`/`n`/`Esc` on the front
-/// of the queue is the whole interaction surface (§7.4: binary, no free text). `agent` is who
-/// asked, root or a subagent, so the modal can label it distinctly. `path`, when present
-/// (`M13-5`), is the resolved target of a filesystem action — `a` uses its parent directory as
-/// the scope to remember, so it's absent (and `a` behaves like `y`) for a request with no
-/// single filesystem target.
+/// One outstanding approval request (`M13-2`), queued per tab — `↑`/`↓` highlights one of
+/// [`ApprovalOption::ALL`] and `Enter` confirms it (`M13-6`; §7.4: still a closed set of
+/// choices, no free text). `agent` is who asked, root or a subagent, so the modal can label it
+/// distinctly. `path`, when present (`M13-5`), is the resolved target of a filesystem action —
+/// [`ApprovalOption::AlwaysAllow`] uses its parent directory as the scope to remember, so it's
+/// absent (and that option behaves like a plain grant) for a request with no single filesystem
+/// target.
 pub(crate) struct PendingApproval {
     pub(crate) id: Ulid,
     pub(crate) agent: AgentId,
     pub(crate) name: String,
     pub(crate) detail: String,
     pub(crate) path: Option<PathBuf>,
+}
+
+/// The three choices `M13-6`'s approval modal offers, cycled with `↑`/`↓` and confirmed with
+/// `Enter` — see [`App::resolve_approval`] for what each does and
+/// `ui::render_approval_modal` for how they're drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ApprovalOption {
+    Allow,
+    Disallow,
+    AlwaysAllow,
+}
+
+impl ApprovalOption {
+    pub(crate) const ALL: [ApprovalOption; 3] = [Self::Allow, Self::Disallow, Self::AlwaysAllow];
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Allow => "Allow",
+            Self::Disallow => "Disallow",
+            Self::AlwaysAllow => "Always Allow",
+        }
+    }
 }
 
 /// One tab's live state (`M8-2`). Everything that was a flat field on `App` before `M8` — the
@@ -164,6 +187,11 @@ struct SessionTab {
     /// `M13-2`'s approval queue — front is what `App::view` renders and `handle_approval_key`
     /// decides; anything behind it just waits.
     pending_approvals: VecDeque<PendingApproval>,
+    /// Index into [`ApprovalOption::ALL`] highlighted for the front of `pending_approvals`
+    /// (`M13-6`) — `↑`/`↓` moves it, `Enter` confirms it. Reset to `0` every time a request is
+    /// popped off the queue (`App::resolve_approval`), so the next one always opens on
+    /// `Allow` rather than carrying over whatever was highlighted for the last one.
+    approval_selection: usize,
     /// `/tools`/`/http` (`M13-3`) read these rather than `SessionDefaults`, since a tab's actual
     /// toolset can diverge from the defaults it was spawned from.
     http_enabled: bool,
@@ -211,6 +239,7 @@ impl SessionTab {
             panel_focus: None,
             detail_modal: None,
             pending_approvals: VecDeque::new(),
+            approval_selection: 0,
             http_enabled,
             may_delegate,
             agents_md,
@@ -392,6 +421,7 @@ impl App {
             title: &m.title,
             lines: &m.lines,
         });
+        let approval_selection = tab.approval_selection;
         let approval_modal = tab
             .pending_approvals
             .front()
@@ -410,6 +440,7 @@ impl App {
                 detail: &a.detail,
                 queued: tab.pending_approvals.len().saturating_sub(1),
                 allow_dir: allow_dir(a.path.as_deref()).map(|dir| dir.display().to_string()),
+                selected: approval_selection,
             });
         AppView {
             tabs,
@@ -902,27 +933,50 @@ impl App {
             .await;
     }
 
-    /// `y`/`a`/`n`/`Esc` on the front of the active tab's approval queue (`M13-2`, `M13-5`).
-    /// `y` grants once; `a` grants and also remembers the request's target's parent directory
-    /// as "always allow" for the rest of the session (falling back to a plain grant if the
-    /// request carries no `path` — nothing to scope a directory from); `n`/`Esc` deny. Any
-    /// other key is ignored (the queue stays exactly as it was) rather than falling through
+    /// `↑`/`↓`/`Enter` on the front of the active tab's approval queue (`M13-2`, `M13-6`):
+    /// arrows move the highlighted [`ApprovalOption`], `Enter` confirms whichever one is
+    /// highlighted. `Esc` is a bare escape hatch straight to [`ApprovalOption::Disallow`],
+    /// without needing to navigate there first. Any other key is ignored (the queue and the
+    /// highlighted option both stay exactly as they were) rather than falling through
     /// anywhere else — while a decision is pending, no other key has a meaning here.
     async fn handle_approval_key(&mut self, key: KeyEvent) {
         let idx = self.active;
-        let (granted, remember_scope) = match key.code {
-            KeyCode::Char('y' | 'Y') => (true, false),
-            KeyCode::Char('a' | 'A') => (true, true),
-            KeyCode::Char('n' | 'N') | KeyCode::Esc => (false, false),
-            _ => return,
-        };
+        let n = ApprovalOption::ALL.len();
+        match key.code {
+            KeyCode::Up => {
+                let selected = &mut self.tabs[idx].approval_selection;
+                *selected = (*selected + n - 1) % n;
+            }
+            KeyCode::Down => {
+                let selected = &mut self.tabs[idx].approval_selection;
+                *selected = (*selected + 1) % n;
+            }
+            KeyCode::Enter => {
+                let option = ApprovalOption::ALL[self.tabs[idx].approval_selection];
+                self.resolve_approval(idx, option).await;
+            }
+            KeyCode::Esc => {
+                self.resolve_approval(idx, ApprovalOption::Disallow).await;
+            }
+            _ => {}
+        }
+    }
+
+    /// Pops the front of `idx`'s approval queue and sends the [`SessionCmd::Approve`] `option`
+    /// maps to (`M13-6`) — [`ApprovalOption::AlwaysAllow`] additionally remembers the
+    /// request's target's parent directory (`M13-5`), falling back to a plain grant when the
+    /// request carries no `path` to scope a directory from. Resets `approval_selection` back
+    /// to `0` so the next queued request (if any) opens on `Allow`, not whatever was
+    /// highlighted for this one.
+    async fn resolve_approval(&mut self, idx: usize, option: ApprovalOption) {
         let Some(approval) = self.tabs[idx].pending_approvals.pop_front() else {
             return;
         };
-        let remember = if remember_scope {
-            allow_dir(approval.path.as_deref())
-        } else {
-            None
+        self.tabs[idx].approval_selection = 0;
+        let (granted, remember) = match option {
+            ApprovalOption::Allow => (true, None),
+            ApprovalOption::Disallow => (false, None),
+            ApprovalOption::AlwaysAllow => (true, allow_dir(approval.path.as_deref())),
         };
         let _ = self.tabs[idx]
             .handle
@@ -1990,7 +2044,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn y_grants_the_front_of_the_queue_and_sends_session_cmd_approve() {
+    async fn enter_confirms_the_default_highlighted_option_and_sends_session_cmd_approve() {
         let mut app = test_app(1);
         let session = app.tabs[0].id;
         let id = Ulid::generate();
@@ -1999,33 +2053,108 @@ mod tests {
             agent: AgentId::ROOT,
             event: approval_required(id),
         });
+        assert_eq!(
+            app.tabs[0].approval_selection, 0,
+            "a freshly queued request must open on the first option (Allow)"
+        );
 
-        app.on_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE))
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
             .await;
 
         assert!(
             app.tabs[0].pending_approvals.is_empty(),
-            "a decision must pop the request off the queue"
+            "Enter must pop the request off the queue"
         );
     }
 
     #[tokio::test]
-    async fn a_grants_and_pops_the_front_of_the_queue_the_same_as_y() {
+    async fn down_moves_the_highlighted_option_forward_and_wraps() {
         let mut app = test_app(1);
         let session = app.tabs[0].id;
-        let id = Ulid::generate();
         app.on_session_event(SessionEvent {
             session,
             agent: AgentId::ROOT,
-            event: write_approval_required(id, PathBuf::from("/workspace/src/a.txt")),
+            event: approval_required(Ulid::generate()),
         });
 
-        app.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE))
+        app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.tabs[0].approval_selection, 1, "Down must move to Disallow");
+
+        app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.tabs[0].approval_selection, 2, "Down must move to Always Allow");
+
+        app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+            .await;
+        assert_eq!(
+            app.tabs[0].approval_selection, 0,
+            "Down past the last option must wrap back to Allow"
+        );
+    }
+
+    #[tokio::test]
+    async fn up_from_the_first_option_wraps_to_the_last() {
+        let mut app = test_app(1);
+        let session = app.tabs[0].id;
+        app.on_session_event(SessionEvent {
+            session,
+            agent: AgentId::ROOT,
+            event: approval_required(Ulid::generate()),
+        });
+
+        app.on_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE))
+            .await;
+
+        assert_eq!(
+            app.tabs[0].approval_selection, 2,
+            "Up from the first option (Allow) must wrap to the last (Always Allow)"
+        );
+    }
+
+    #[tokio::test]
+    async fn enter_on_the_highlighted_option_pops_the_queue_and_resets_the_selection() {
+        let mut app = test_app(1);
+        let session = app.tabs[0].id;
+        app.on_session_event(SessionEvent {
+            session,
+            agent: AgentId::ROOT,
+            event: write_approval_required(Ulid::generate(), PathBuf::from("/workspace/src/a.txt")),
+        });
+
+        app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+            .await;
+        app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+            .await;
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
             .await;
 
         assert!(
             app.tabs[0].pending_approvals.is_empty(),
-            "`a` must pop the request off the queue, same as `y`"
+            "Enter on Always Allow must pop the request off the queue, same as any other option"
+        );
+        assert_eq!(
+            app.tabs[0].approval_selection, 0,
+            "the selection must reset to Allow for whatever request comes next"
+        );
+    }
+
+    #[tokio::test]
+    async fn esc_denies_immediately_without_needing_to_navigate_to_disallow() {
+        let mut app = test_app(1);
+        let session = app.tabs[0].id;
+        app.on_session_event(SessionEvent {
+            session,
+            agent: AgentId::ROOT,
+            event: approval_required(Ulid::generate()),
+        });
+
+        app.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .await;
+
+        assert!(
+            app.tabs[0].pending_approvals.is_empty(),
+            "Esc must pop the request off the queue as a deny, without pressing Down first"
         );
     }
 
@@ -2049,7 +2178,11 @@ mod tests {
         assert_eq!(
             app.tabs[0].pending_approvals.len(),
             1,
-            "an unrecognized key (not y/n/Esc) must leave the pending request untouched"
+            "a key that isn't Up/Down/Enter/Esc must leave the pending request untouched"
+        );
+        assert_eq!(
+            app.tabs[0].approval_selection, 0,
+            "and must leave the highlighted option untouched too"
         );
     }
 
