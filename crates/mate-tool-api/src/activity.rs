@@ -39,9 +39,10 @@ pub enum ToolActivity {
     SkillLoaded { name: String },
 }
 
-/// `Write`/`Create`/`Delete` exist now, ahead of any producer, so `mate-tool-edit` (§14)
-/// doesn't have to reopen this enum later — the same reasoning as
-/// `mate-core::streaming::SubagentOutcome`. `mate-tool-fs`'s `M3` tools emit `Read` only.
+/// `mate-tool-fs`'s `read_file`/`list_dir`/`find_files` (`M3`) emit `Read`; `write_file` emits
+/// `Write` (overwrite) or `Create` (new file). `Delete` has no producer yet — it was defined
+/// ahead of one the same way `Write`/`Create` were before `write_file` landed, the same
+/// reasoning as `mate-core::streaming::SubagentOutcome`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileOp {
     Read,

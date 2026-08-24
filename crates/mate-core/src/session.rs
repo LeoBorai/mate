@@ -51,6 +51,7 @@
 //! lives in [`crate::compact`] and is driven from [`session_task`], right after each prompt
 //! completes.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use mate_tool_api::{AgentId, ToolCtx};
@@ -97,16 +98,20 @@ pub enum SessionStatus {
     Closed,
 }
 
-/// One command a session's task consumes (§5.1). `Approve { id, granted }` resolves the
-/// pending request `id` names on this session's `crate::approval::SessionApprovalHub` — both
-/// `session_task` (idle) and `run_prompt`'s `select!` (mid-turn) route it there, since an
-/// approval can be requested by a tool call at either point.
+/// One command a session's task consumes (§5.1). `Approve { id, granted, remember }` resolves
+/// the pending request `id` names on this session's `crate::approval::SessionApprovalHub` —
+/// both `session_task` (idle) and `run_prompt`'s `select!` (mid-turn) route it there, since an
+/// approval can be requested by a tool call at either point. `remember`, when `Some` alongside
+/// `granted: true`, is a directory `mate-tui`'s "always allow" key (`M13-5`) offers to
+/// remember — every later request under it is granted with no further prompt for the rest of
+/// the session.
 #[derive(Debug, Clone)]
 pub enum SessionCmd {
     Prompt(String),
     Approve {
         id: Ulid,
         granted: bool,
+        remember: Option<PathBuf>,
     },
     Cancel,
     /// Cancels one running subagent (`M12-9`'s `x` key) without touching the root turn or any
@@ -410,8 +415,12 @@ async fn session_task<M>(
             SessionCmd::Cancel => {}
             // Same reasoning as `Cancel` above — no subagent can be running outside a turn.
             SessionCmd::CancelSubagent(_) => {}
-            SessionCmd::Approve { id, granted } => {
-                approvals.resolve(id, granted);
+            SessionCmd::Approve {
+                id,
+                granted,
+                remember,
+            } => {
+                approvals.resolve(id, granted, remember);
             }
             SessionCmd::Shutdown => {
                 session_cancel.cancel();
@@ -473,8 +482,12 @@ where
                     shutdown = true;
                     session_cancel.cancel();
                 }
-                Some(SessionCmd::Approve { id, granted }) => {
-                    approvals.resolve(id, granted);
+                Some(SessionCmd::Approve {
+                    id,
+                    granted,
+                    remember,
+                }) => {
+                    approvals.resolve(id, granted, remember);
                 }
                 // One turn at a time (§5.2's model): a prompt sent while another is still
                 // running is dropped rather than queued or interleaved.

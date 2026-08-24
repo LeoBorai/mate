@@ -23,6 +23,7 @@
 //! it rather than keeping a second definition in sync.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use futures::{Stream, StreamExt};
 use mate_tool_api::{AgentId, SubagentOutcome, ToolActivity};
@@ -55,6 +56,11 @@ pub enum AgentEvent {
         id: Ulid,
         name: String,
         detail: String,
+        /// The resolved, in-jail target of the action being approved, when there is one
+        /// (`M13-5`'s "always allow writes under this directory" reads this to compute the
+        /// directory it offers to remember). `None` for a request with no single filesystem
+        /// target.
+        path: Option<PathBuf>,
     },
     SubagentSpawned {
         id: AgentId,

@@ -97,7 +97,13 @@ async fn build_agent_attaches_the_fs_toolset() {
 
     assert_eq!(
         names,
-        vec!["find_files", "http_request", "list_dir", "read_file"],
+        vec![
+            "find_files",
+            "http_request",
+            "list_dir",
+            "read_file",
+            "write_file"
+        ],
         "stub_agent_spec's HttpPolicy::default() has enabled: true, so http_request must attach"
     );
 }
