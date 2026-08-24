@@ -118,11 +118,12 @@ a human answers or `SessionApprovalHub`'s 5-minute timeout auto-denies it
 remember)` with `remember: Some(dir)` adds `dir` to a per-hub, per-session
 `always_allowed` set, and any later `request` whose `path` falls under a
 remembered directory is granted immediately — no event, no prompt. This is
-what `mate-tui`'s approval modal's `a` key (as opposed to `y`, a one-time
-grant) drives: it remembers the request's target's **parent** directory,
-never the whole workspace root. The scope lives only as long as the hub —
-one session, never persisted to disk, never covering a sibling directory it
-wasn't explicitly granted for.
+what `mate-tui`'s approval modal's `Always Allow` option (`M13-6`; alongside
+`Allow` and `Disallow`, cycled with `↑`/`↓` and confirmed with `Enter` —
+`Esc` is a shortcut straight to `Disallow`) drives: it remembers the
+request's target's **parent** directory, never the whole workspace root.
+The scope lives only as long as the hub — one session, never persisted to
+disk, never covering a sibling directory it wasn't explicitly granted for.
 
 ## `mate-tool-http` — `http_request`, SSRF hardening
 
