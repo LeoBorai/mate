@@ -7,7 +7,6 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use mate_core::backend::Backend;
 use mate_core::cost::ModelRate;
 use mate_core::provider_error::ProviderError;
 use mate_core::session::SessionManager;
@@ -17,15 +16,16 @@ use mate_tui::{InitialSession, SessionDefaults};
 use crate::config::{Config, api_token};
 use crate::error::MateError;
 use crate::plain::{
-    DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE, classify_verify_error, resolve_workspace_roots,
+    DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE, build_backend, classify_verify_error,
+    resolve_workspace_roots,
 };
 
 pub async fn run(cli: &crate::cli::Cli, config: &Config) -> Result<(), MateError> {
     let token =
         api_token().ok_or_else(|| MateError::Auth(anyhow::anyhow!("API_TOKEN is not set")))?;
 
-    let backend = Backend::huggingface(&token, config.sub_provider.as_deref(), None)
-        .map_err(|err| MateError::Provider(anyhow::anyhow!(err)))?;
+    let backend =
+        build_backend(config, &token).map_err(|err| MateError::Provider(anyhow::anyhow!(err)))?;
     backend
         .verify()
         .await
@@ -34,6 +34,7 @@ pub async fn run(cli: &crate::cli::Cli, config: &Config) -> Result<(), MateError
     let roots = resolve_workspace_roots(cli)?;
     let defaults = SessionDefaults {
         model: config.model.clone(),
+        backend_name: config.backend.label().to_string(),
         sub_provider: config.sub_provider.clone(),
         temperature: DEFAULT_TEMPERATURE,
         max_tokens: DEFAULT_MAX_TOKENS,

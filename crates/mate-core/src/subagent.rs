@@ -343,6 +343,19 @@ impl SubagentSpawner for SubagentRunner {
                 )
                 .await
             }
+            BuiltAgent::Gemini(agent) => {
+                drive_subagent(
+                    &agent,
+                    self.session,
+                    agent_id,
+                    &request,
+                    &cancel,
+                    deadline,
+                    report_max_bytes,
+                    &self.events_tx,
+                )
+                .await
+            }
         };
         self.subagent_cancels
             .lock()

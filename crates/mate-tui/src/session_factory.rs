@@ -24,6 +24,11 @@ use tokio_util::sync::CancellationToken;
 #[derive(Debug, Clone)]
 pub struct SessionDefaults {
     pub model: String,
+    /// Which `Backend` path the process is talking through ("huggingface", "gemini", …) —
+    /// `mate-tui` doesn't know the concrete `Backend`/`BackendKind` types (`cli` depends on
+    /// `tui`, not the reverse), so `mate-cli` hands this in as a plain label. Only used as
+    /// [`SessionDefaults::provider_label`]'s fallback when `sub_provider` is unset.
+    pub backend_name: String,
     pub sub_provider: Option<String>,
     pub temperature: f64,
     pub max_tokens: u64,
@@ -42,7 +47,7 @@ impl SessionDefaults {
     pub fn provider_label(&self) -> String {
         self.sub_provider
             .clone()
-            .unwrap_or_else(|| "huggingface".to_string())
+            .unwrap_or_else(|| self.backend_name.clone())
     }
 
     /// The subagent model the status panel's `MODEL` widget shows on its third line (§9.4) —
@@ -146,6 +151,7 @@ mod tests {
     fn defaults() -> SessionDefaults {
         SessionDefaults {
             model: "org/model".to_string(),
+            backend_name: "huggingface".to_string(),
             sub_provider: None,
             temperature: 0.2,
             max_tokens: 512,
@@ -161,6 +167,13 @@ mod tests {
     #[test]
     fn provider_label_falls_back_to_huggingface_when_unset() {
         assert_eq!(defaults().provider_label(), "huggingface");
+    }
+
+    #[test]
+    fn provider_label_falls_back_to_the_configured_backend_when_unset() {
+        let mut d = defaults();
+        d.backend_name = "gemini".to_string();
+        assert_eq!(d.provider_label(), "gemini");
     }
 
     #[test]

@@ -19,9 +19,10 @@ plain `Tool` trait. Two reasons this matters:
   that attaches to an `AgentBuilder` via `.tool_server_handle(handle)`.
 - **`.tool_server_handle()` is generic over the provider model**, unlike
   `.tool()` which pins the builder's typestate. `mate-core::toolset::
-  build_toolset` builds one `ToolServerHandle` and it works for either of
-  `Backend`'s two provider paths (`BuiltAgent::HuggingFace` /
-  `::OpenAiCompatible`) without rebuilding the toolset per variant. Reach for
+  build_toolset` builds one `ToolServerHandle` and it works for any of
+  `Backend`'s three provider paths (`BuiltAgent::HuggingFace` /
+  `::OpenAiCompatible` / `::Gemini`) without rebuilding the toolset per
+  variant. Reach for
   `ToolServer`/`ToolServerHandle` any time you need one toolset value usable
   against more than one concrete completion model.
 
@@ -66,17 +67,19 @@ silently producing a description-free schema is not something clippy or
 pub enum BuiltAgent {
     HuggingFace(Agent<huggingface::completion::CompletionModel>),
     OpenAiCompatible(Agent<openai::completion::CompletionModel>),
+    Gemini(Agent<gemini::completion::CompletionModel>),
 }
 ```
 
-`Agent<M>` is generic over the completion model, and `Backend`'s two
-provider paths (`HuggingFace` native vs. the `openai`-compatible fallback
-pointed at HF's router or a local server) produce genuinely distinct model
-types. `BuiltAgent` carries that distinction forward as an enum rather than
-erasing it behind a trait object — every call site that needs to drive a
-turn (`stream_turn` in `streaming.rs`, `drive_subagent` in `subagent.rs`)
+`Agent<M>` is generic over the completion model, and `Backend`'s three
+provider paths (`HuggingFace` native, the `openai`-compatible fallback
+pointed at HF's router or a local server, and `gemini` native) produce
+genuinely distinct model types. `BuiltAgent` carries that distinction
+forward as an enum rather than erasing it behind a trait object — every
+call site that needs to drive a turn (`stream_turn` in `streaming.rs`,
+`spawn_supervised` in `session.rs`, `drive_subagent` in `subagent.rs`)
 `match`es on it and calls the same generic function against whichever
-variant it got. If you add a third provider path, this is the pattern to
+variant it got. If you add a fourth provider path, this is the pattern to
 extend, not a boxed `dyn` abstraction over `Agent<_>`.
 
 Functions that need to work across both variants without knowing which are

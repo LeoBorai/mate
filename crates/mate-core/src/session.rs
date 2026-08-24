@@ -302,6 +302,16 @@ impl SessionManager {
                 subagents,
                 approvals,
             ),
+            BuiltAgent::Gemini(agent) => spawn_supervised(
+                id,
+                agent,
+                cmds_rx,
+                events_tx,
+                status_tx,
+                session_cancel,
+                subagents,
+                approvals,
+            ),
         }
 
         Ok(self.sessions[id].clone())

@@ -1,11 +1,11 @@
 //! `build_agent` (§4, `M1-2`/`M1-3`): turns a [`Backend`] plus an [`AgentSpec`] into a Rig
 //! `Agent`.
 //!
-//! `Agent<M>` is generic over the completion model, and `Backend`'s two provider paths
-//! (`M1-3`) produce distinct model types — a HuggingFace-native client and an
-//! OpenAI-compatible client are not interchangeable at the type level even though they're
-//! both driven by the same Chat Completions wire format. [`BuiltAgent`] carries that
-//! distinction forward instead of erasing it.
+//! `Agent<M>` is generic over the completion model, and `Backend`'s three provider paths
+//! (`M1-3`) produce distinct model types — a HuggingFace-native client, an OpenAI-compatible
+//! client, and a Gemini-native client are not interchangeable at the type level even though the
+//! first two are both driven by the same Chat Completions wire format. [`BuiltAgent`] carries
+//! that distinction forward instead of erasing it.
 //!
 //! `M4` attaches the toolset built by [`crate::toolset::build_toolset`] and the multi-turn
 //! budget (`AgentBuilder::default_max_turns`, backed by [`crate::turn_cap::TurnCapHook`]). The
@@ -19,7 +19,7 @@ use mate_tool_http::HttpShared;
 use rig::agent::Agent;
 use rig::client::AgentClientExt;
 use rig::completion::Message;
-use rig::providers::{huggingface, openai};
+use rig::providers::{gemini, huggingface, openai};
 use tokio_util::sync::CancellationToken;
 
 use crate::backend::Backend;
@@ -32,6 +32,7 @@ use crate::turn_cap::TurnCapHook;
 pub enum BuiltAgent {
     HuggingFace(Agent<huggingface::completion::CompletionModel>),
     OpenAiCompatible(Agent<openai::completion::CompletionModel>),
+    Gemini(Agent<gemini::completion::CompletionModel>),
 }
 
 impl BuiltAgent {
@@ -49,6 +50,9 @@ impl BuiltAgent {
                 streaming::stream_turn(agent, prompt, cancel, on_event).await
             }
             BuiltAgent::OpenAiCompatible(agent) => {
+                streaming::stream_turn(agent, prompt, cancel, on_event).await
+            }
+            BuiltAgent::Gemini(agent) => {
                 streaming::stream_turn(agent, prompt, cancel, on_event).await
             }
         }
@@ -112,6 +116,28 @@ pub fn build_agent(
                 .build();
             tracing::info!(provider = "openai_compatible", model = %spec.model, "agent built");
             BuiltAgent::OpenAiCompatible(agent)
+        }
+        Backend::Gemini(client) => {
+            tracing::info!(
+                provider = "gemini",
+                model = %spec.model,
+                max_turns = spec.max_turns,
+                may_delegate = spec.may_delegate,
+                "building agent"
+            );
+            let agent = client
+                .agent(&spec.model)
+                .preamble(&spec.preamble)
+                .temperature(spec.temperature)
+                .max_tokens(spec.max_tokens)
+                .tool_server_handle(tools)
+                .default_max_turns(spec.max_turns)
+                .add_hook(TurnCapHook {
+                    max_turns: spec.max_turns,
+                })
+                .build();
+            tracing::info!(provider = "gemini", model = %spec.model, "agent built");
+            BuiltAgent::Gemini(agent)
         }
     }
 }

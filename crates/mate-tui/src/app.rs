@@ -1492,6 +1492,7 @@ mod tests {
     fn defaults() -> SessionDefaults {
         SessionDefaults {
             model: "org/model".to_string(),
+            backend_name: "huggingface".to_string(),
             sub_provider: None,
             temperature: 0.2,
             max_tokens: 512,

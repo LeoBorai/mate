@@ -1,7 +1,7 @@
 //! `Backend` (§4): the process-wide, provider-backed client that every session's and
 //! subagent's `Agent` is built from — one auth setup, one pooled HTTP connection underneath.
 //!
-//! Two provider paths, config-selected (`M1-3`):
+//! Three provider paths, config-selected (`M1-3`):
 //!
 //! - [`Backend::huggingface`] — the default. Talks to HuggingFace Inference Providers
 //!   natively, optionally against a `base_url` override (a dedicated Inference Endpoint, or
@@ -10,12 +10,13 @@
 //!   completions endpoint: the HF router's own OpenAI-compatible surface
 //!   ([`HF_ROUTER_OPENAI_BASE_URL`]), for the day Rig's native HuggingFace provider lags a
 //!   router change, or an arbitrary OpenAI-compatible server (local TGI/vLLM).
+//! - [`Backend::gemini`] — Google's Gemini API, native `generateContent` surface.
 //!
-//! Both variants share the same `Backend` type so callers elsewhere in `mate-core` (`M1-2`'s
+//! All variants share the same `Backend` type so callers elsewhere in `mate-core` (`M1-2`'s
 //! `build_agent`) don't need to know which path is live — see [`crate::agent::BuiltAgent`].
 
 use rig::client::VerifyClient;
-use rig::providers::{huggingface, openai};
+use rig::providers::{gemini, huggingface, openai};
 
 /// The HuggingFace router's OpenAI-compatible base URL — the default target for the
 /// [`Backend::openai_compatible`] fallback path.
@@ -47,6 +48,7 @@ pub enum Backend {
         hub_verify_client: Option<reqwest::Client>,
     },
     OpenAiCompatible(openai::CompletionsClient),
+    Gemini(gemini::Client),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -127,6 +129,19 @@ impl Backend {
         Ok(Self::OpenAiCompatible(client))
     }
 
+    /// Builds the shared backend against Google's Gemini API — its native `generateContent`
+    /// surface, not an OpenAI-compatible shim. `api_key` is the caller's `API_TOKEN`, same
+    /// convention as every other `Backend` path (read from the environment at the CLI boundary,
+    /// never here). Unlike [`Backend::huggingface`]'s default router path, this provider's
+    /// `VERIFY_PATH` is a real model-listing endpoint on `generativelanguage.googleapis.com`, so
+    /// [`Backend::verify`] needs no host-mismatch workaround for it.
+    pub fn gemini(api_key: impl AsRef<str>) -> Result<Self, BackendError> {
+        let client = gemini::Client::builder()
+            .api_key(api_key.as_ref())
+            .build()?;
+        Ok(Self::Gemini(client))
+    }
+
     /// Verifies the configured provider actually authenticates, regardless of path. On the
     /// default router path this goes through [`verify_huggingface_hub_token`] instead of Rig's
     /// own `client.verify()` — see that function for why. A `base_url` override takes the
@@ -149,6 +164,10 @@ impl Backend {
             }
             Self::OpenAiCompatible(client) => {
                 tracing::info!("verifying API token against the OpenAI-compatible endpoint");
+                client.verify().await
+            }
+            Self::Gemini(client) => {
+                tracing::info!("verifying API token against the Gemini API");
                 client.verify().await
             }
         };
@@ -383,6 +402,20 @@ mod tests {
         assert_eq!(
             backend.qualify_model("Qwen/Qwen3-Coder-480B"),
             "Qwen/Qwen3-Coder-480B"
+        );
+    }
+
+    #[test]
+    fn builds_offline_against_gemini() {
+        Backend::gemini("dummy-key").expect("client construction never contacts the network");
+    }
+
+    #[test]
+    fn does_not_qualify_the_gemini_path() {
+        let backend = Backend::gemini("dummy-key").unwrap();
+        assert_eq!(
+            backend.qualify_model("gemini-2.5-flash"),
+            "gemini-2.5-flash"
         );
     }
 }
