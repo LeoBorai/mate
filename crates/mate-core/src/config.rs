@@ -36,6 +36,12 @@ pub enum HttpAccessPolicy {
     AllowLocalhost,
 }
 
+/// The subagent model absent any explicit override — the HuggingFace path's own default, used
+/// by [`DelegationPolicy::default`]. Exposed so `mate-cli` (which knows about backend selection,
+/// a concept `mate-core` doesn't have) can detect "still at the HuggingFace default" and swap in
+/// a backend-appropriate default of its own instead, without duplicating this literal.
+pub const DEFAULT_SUBAGENT_MODEL: &str = "Qwen/Qwen3-Coder-30B-A3B-Instruct";
+
 /// Delegation guardrails (§7.4). Depth 1 by default; deeper trees are opt-in via config only,
 /// never via a tool argument the model controls.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -55,7 +61,7 @@ impl Default for DelegationPolicy {
     fn default() -> Self {
         Self {
             enabled: true,
-            subagent_model: Some("Qwen/Qwen3-Coder-30B-A3B-Instruct".to_string()),
+            subagent_model: Some(DEFAULT_SUBAGENT_MODEL.to_string()),
             max_depth: 1,
             max_concurrent: 4,
             max_total_per_turn: 8,

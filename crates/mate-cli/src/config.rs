@@ -29,6 +29,11 @@ pub enum BackendKind {
     Gemini,
 }
 
+/// Subagent default on the `Gemini` path (`apply_flags`) — small and cheap, the same role
+/// `DEFAULT_SUBAGENT_MODEL` plays on the `Huggingface` path, but an actual Gemini model id
+/// rather than a Qwen one that backend can't serve.
+const GEMINI_DEFAULT_SUBAGENT_MODEL: &str = "gemini-3.5-flash-lite";
+
 impl BackendKind {
     /// The plain-string label `mate-tui`'s `SessionDefaults::backend_name` carries — `mate-tui`
     /// sits below `mate-cli` in the dependency graph, so it can't name `BackendKind` itself.
@@ -203,6 +208,15 @@ fn apply_flags(config: &mut Config, cli: &Cli) {
     }
     if let Some(subagent_model) = &cli.subagent_model {
         config.delegation.subagent_model = Some(subagent_model.clone());
+    } else if config.backend == BackendKind::Gemini
+        && config.delegation.subagent_model.as_deref()
+            == Some(mate_core::config::DEFAULT_SUBAGENT_MODEL)
+    {
+        // No explicit `--subagent-model`/config override, and the value is still exactly the
+        // HuggingFace-path default — swap in a Gemini-appropriate one instead of spawning
+        // subagents against a model that isn't even on this backend. Doesn't fire if the user
+        // *did* set `delegation.subagent_model` themselves, even to this same string.
+        config.delegation.subagent_model = Some(GEMINI_DEFAULT_SUBAGENT_MODEL.to_string());
     }
     if let Some(n) = cli.max_sessions {
         config.max_sessions = n;
@@ -359,6 +373,62 @@ mod tests {
 
             let config = load(&cli(&["--backend", "gemini"])).unwrap();
             assert_eq!(config.backend, BackendKind::Gemini);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn gemini_backend_picks_a_gemini_subagent_default() {
+        Jail::expect_with(|jail| {
+            jail.clear_env();
+            let home = jail.directory().display().to_string();
+            jail.set_env("HOME", home);
+
+            let config = load(&cli(&["--backend", "gemini"])).unwrap();
+            assert_eq!(
+                config.delegation.subagent_model.as_deref(),
+                Some("gemini-3.5-flash-lite"),
+                "gemini backend with no explicit --subagent-model should not spawn subagents \
+                 against a Qwen model this backend can't serve"
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn explicit_subagent_model_flag_wins_over_the_gemini_default() {
+        Jail::expect_with(|jail| {
+            jail.clear_env();
+            let home = jail.directory().display().to_string();
+            jail.set_env("HOME", home);
+
+            let config = load(&cli(&[
+                "--backend",
+                "gemini",
+                "--subagent-model",
+                "gemini-2.5-flash",
+            ]))
+            .unwrap();
+            assert_eq!(
+                config.delegation.subagent_model.as_deref(),
+                Some("gemini-2.5-flash")
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn huggingface_backend_keeps_its_own_subagent_default() {
+        Jail::expect_with(|jail| {
+            jail.clear_env();
+            let home = jail.directory().display().to_string();
+            jail.set_env("HOME", home);
+
+            let config = load(&cli(&[])).unwrap();
+            assert_eq!(
+                config.delegation.subagent_model.as_deref(),
+                Some(mate_core::config::DEFAULT_SUBAGENT_MODEL)
+            );
             Ok(())
         });
     }

@@ -11,7 +11,6 @@ mod support;
 use mate_core::agent::{BuiltAgent, build_agent};
 use mate_core::backend::Backend;
 use mate_core::config::{AgentSpec, DelegationPolicy, HttpPolicy};
-use rig::prelude::*;
 
 fn stub_agent_spec() -> AgentSpec {
     AgentSpec {

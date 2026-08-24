@@ -136,7 +136,9 @@ impl Backend {
     /// `VERIFY_PATH` is a real model-listing endpoint on `generativelanguage.googleapis.com`, so
     /// [`Backend::verify`] needs no host-mismatch workaround for it.
     pub fn gemini(api_key: impl AsRef<str>) -> Result<Self, BackendError> {
-        let client = gemini::Client::builder().api_key(api_key.as_ref()).build()?;
+        let client = gemini::Client::builder()
+            .api_key(api_key.as_ref())
+            .build()?;
         Ok(Self::Gemini(client))
     }
 

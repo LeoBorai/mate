@@ -65,8 +65,8 @@ pub async fn run(cli: &Cli, config: &Config) -> Result<(), MateError> {
     let token =
         api_token().ok_or_else(|| MateError::Auth(anyhow::anyhow!("API_TOKEN is not set")))?;
 
-    let backend = build_backend(config, &token)
-        .map_err(|err| MateError::Provider(anyhow::anyhow!(err)))?;
+    let backend =
+        build_backend(config, &token).map_err(|err| MateError::Provider(anyhow::anyhow!(err)))?;
     backend
         .verify()
         .await

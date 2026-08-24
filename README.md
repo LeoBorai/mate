@@ -134,7 +134,8 @@ remembering the flag.
 ```
 mate [PROMPT]
   -m, --model <ID>              root agent model
-      --subagent-model <ID>     defaults to the root model; a cheaper one is usually right
+      --subagent-model <ID>     a cheaper model is usually right; auto-picks a small Gemini
+                                 model when --backend gemini and left unset
       --backend <huggingface|gemini>  provider backend to talk to (default huggingface)
       --provider <NAME>         HuggingFace sub-provider
   -C, --dir <PATH>...           workspace root; repeat for one tab per path

@@ -13,6 +13,18 @@ flags → env (MATE_*) → ./.mate.toml (or --config) → ~/.config/mate/config.
   `--backend`/`Config::backend`, distinct from `--provider`/`sub_provider`
   (an HF-only partner choice). `plain::build_backend` is the one place that
   turns `Config::backend` into a real `Backend`; both frontends call it.
+
+- `apply_flags` also backend-switches the subagent default: if
+  `--subagent-model` wasn't passed and `delegation.subagent_model` is still
+  exactly `mate_core::config::DEFAULT_SUBAGENT_MODEL` (the HuggingFace-path
+  default) after the figment merge, and `backend == Gemini`, it's replaced
+  with a Gemini model (`gemini-3.5-flash-lite`) — so a `--backend gemini`
+  run doesn't spawn subagents against a Qwen model that backend can't serve.
+  This is a string-equality heuristic, not a "was this explicitly set"
+  check — figment doesn't preserve that distinction post-merge — so it
+  won't fire if a config file/env var explicitly pins `subagent_model` to
+  that same HuggingFace default string while also selecting `gemini`; that
+  combination is assumed deliberate.
 - `DelegationPolicy`, `HttpPolicy`, `HttpAccessPolicy`, `AgentSpec`,
   `SessionSpec` live in `mate-core/src/config.rs` — the shared, provider-facing
   shape that both the CLI and (eventually) the session manager build from.
