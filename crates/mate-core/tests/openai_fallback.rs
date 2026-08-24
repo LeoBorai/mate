@@ -56,7 +56,9 @@ async fn openai_compatible_fallback_round_trips_through_a_stub_server() {
         support::tool_ctx(tmp.path().to_path_buf()),
     ) {
         BuiltAgent::OpenAiCompatible(agent) => agent,
-        BuiltAgent::HuggingFace(_) => panic!("expected the OpenAiCompatible variant"),
+        BuiltAgent::HuggingFace(_) | BuiltAgent::Gemini(_) => {
+            panic!("expected the OpenAiCompatible variant")
+        }
     };
 
     let reply = agent
@@ -83,7 +85,9 @@ async fn build_agent_attaches_the_fs_toolset() {
         support::tool_ctx(tmp.path().to_path_buf()),
     ) {
         BuiltAgent::OpenAiCompatible(agent) => agent,
-        BuiltAgent::HuggingFace(_) => panic!("expected the OpenAiCompatible variant"),
+        BuiltAgent::HuggingFace(_) | BuiltAgent::Gemini(_) => {
+            panic!("expected the OpenAiCompatible variant")
+        }
     };
 
     let mut names: Vec<String> = agent

@@ -28,13 +28,29 @@ use tokio::io::AsyncBufReadExt;
 use tokio_util::sync::CancellationToken;
 
 use crate::cli::Cli;
-use crate::config::{Config, api_token};
+use crate::config::{BackendKind, Config, api_token};
 use crate::error::MateError;
 
 /// Not exposed by `Config`/`Cli` yet (§10 lists neither as a knob) — fixed until a real need
 /// to tune them shows up.
 pub(crate) const DEFAULT_TEMPERATURE: f64 = 0.2;
 pub(crate) const DEFAULT_MAX_TOKENS: u64 = 4096;
+
+/// Builds the one process-wide `Backend` per `config.backend` (§4, `M1-3`) — shared by both
+/// frontends (`plain.rs`, `tui.rs`) so the provider switch lives in exactly one place.
+/// `sub_provider` only applies to the `Huggingface` path; it's silently unused otherwise, same
+/// as HuggingFace's own partner names are unused on the `Gemini` path.
+pub(crate) fn build_backend(
+    config: &Config,
+    token: &str,
+) -> Result<Backend, mate_core::backend::BackendError> {
+    match config.backend {
+        BackendKind::Huggingface => {
+            Backend::huggingface(token, config.sub_provider.as_deref(), None)
+        }
+        BackendKind::Gemini => Backend::gemini(token),
+    }
+}
 
 /// Whether `main` should route this invocation through the plain frontend: an explicit
 /// `--plain`/`--print`, or a prompt on a non-TTY stdout (`M5-3` — piping into another program
@@ -49,7 +65,7 @@ pub async fn run(cli: &Cli, config: &Config) -> Result<(), MateError> {
     let token =
         api_token().ok_or_else(|| MateError::Auth(anyhow::anyhow!("API_TOKEN is not set")))?;
 
-    let backend = Backend::huggingface(&token, config.sub_provider.as_deref(), None)
+    let backend = build_backend(config, &token)
         .map_err(|err| MateError::Provider(anyhow::anyhow!(err)))?;
     backend
         .verify()

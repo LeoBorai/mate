@@ -2,8 +2,8 @@
 
 ![mate demo](docs/demo.gif)
 
-A terminal coding agent. `mate` chats with a HuggingFace-hosted model over your workspace,
-can read files and make outbound HTTP requests on your own behalf, and can delegate narrow
+A terminal coding agent. `mate` chats with a HuggingFace-hosted or Gemini model over your
+workspace, can read files and make outbound HTTP requests on your own behalf, and can delegate narrow
 sub-tasks to short-lived subordinate agents so its own context stays small. It runs either as a
 tabbed TUI (the default) or as a plain, script-friendly stdout stream.
 
@@ -46,7 +46,9 @@ mate -p "summarize the failing test in tests/foo.rs"
 ```
 
 `API_TOKEN` is read from the environment only — it is never written to or read from a config
-file.
+file. It's the one credential every backend uses: with `--backend gemini` (or `backend = "gemini"`
+in config), `API_TOKEN` is your Gemini API key instead of your HuggingFace token — see
+[Google AI Studio](https://aistudio.google.com/apikey) to get one.
 
 ## The TUI
 
@@ -133,6 +135,7 @@ remembering the flag.
 mate [PROMPT]
   -m, --model <ID>              root agent model
       --subagent-model <ID>     defaults to the root model; a cheaper one is usually right
+      --backend <huggingface|gemini>  provider backend to talk to (default huggingface)
       --provider <NAME>         HuggingFace sub-provider
   -C, --dir <PATH>...           workspace root; repeat for one tab per path
       --plain                   line-based stdout, single session
@@ -156,7 +159,8 @@ built-in defaults. Missing files are skipped silently, not an error.
 
 ```toml
 model = "Qwen/Qwen3-Coder-30B-A3B-Instruct"
-sub_provider = "together"   # optional; unset uses HuggingFace's own routing
+backend = "huggingface"      # or "gemini"; picks the provider path, not the model
+sub_provider = "together"    # HuggingFace only; unset uses HuggingFace's own routing
 max_sessions = 8
 max_turns = 12
 

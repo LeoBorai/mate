@@ -6,7 +6,8 @@ Everything here lives in `mate-core`: `backend.rs`, `agent.rs`,
 ## `Backend` (`backend.rs`)
 
 Process-wide, shared across every session and subagent (one connection pool,
-one auth setup). Two provider paths, config-selected:
+one auth setup). Three provider paths, config-selected (`mate-cli`'s
+`--backend`/`BackendKind`, default `huggingface`):
 
 - `Backend::huggingface(api_key, sub_provider, base_url)` — the default.
   Talks to HuggingFace Inference Providers natively. `sub_provider` is a
@@ -36,6 +37,15 @@ one auth setup). Two provider paths, config-selected:
   to reach HF's OpenAI-compatible surface if Rig's native HF provider ever
   lags a router change, or at an arbitrary OpenAI-compatible server (local
   TGI/vLLM).
+- `Backend::gemini(api_key)` — Google's Gemini API, Rig's native
+  `generateContent` client (`rig::providers::gemini`), not an
+  OpenAI-compatible shim. Same `api_key` convention as every other path
+  (`API_TOKEN`, taken as a value, never read from the environment inside
+  `mate-core`). No `sub_provider`/`model_qualifier` concept — `qualify_model`
+  is a no-op on this path, same as `OpenAiCompatible`. `verify()` uses Rig's
+  own `client.verify()` unmodified: this provider's `VERIFY_PATH` is a real
+  model-listing endpoint on `generativelanguage.googleapis.com`, so it
+  doesn't need the HF hub-token workaround described below.
 
 `Backend::verify()` is the only method that touches the network; construction
 alone never does. For `OpenAiCompatible`, and for `HuggingFace` with a
@@ -76,15 +86,19 @@ the environment inside `mate-core` — see `config.md`.
 pub enum BuiltAgent {
     HuggingFace(Agent<huggingface::completion::CompletionModel>),
     OpenAiCompatible(Agent<openai::completion::CompletionModel>),
+    Gemini(Agent<gemini::completion::CompletionModel>),
 }
 ```
 
 One function, `build_agent(backend, spec)`, builds both root agents and
 subagents — a subagent is just an `AgentSpec` with a narrower preamble and
 `may_delegate: false`. `Agent<M>` is generic over the completion model, and
-the two `Backend` variants produce distinct model types, so `BuiltAgent`
+the three `Backend` variants produce distinct model types, so `BuiltAgent`
 carries that distinction forward instead of erasing it — expect to `match` on
-it (see `streaming.rs`'s `stream_turn` for the pattern).
+it (see `streaming.rs`'s `stream_turn` for the pattern). Every exhaustive
+`match` on `BuiltAgent` needs a `Gemini` arm too — `session.rs`'s
+`spawn_supervised` dispatch and `subagent.rs`'s `drive_subagent` dispatch are
+the other two sites, besides `stream_turn`.
 
 No tools are attached yet — that lands with the tool crates.
 

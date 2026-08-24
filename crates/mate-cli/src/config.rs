@@ -16,10 +16,35 @@ use serde::{Deserialize, Serialize};
 
 use crate::cli::Cli;
 
+/// Which [`mate_core::backend::Backend`] path the whole process talks through — built once at
+/// startup and shared across every session and subagent, same as `Backend` itself. Distinct
+/// from `sub_provider`: that picks a partner *within* the `HuggingFace` path (`together`,
+/// `fireworks`, …); this picks the path itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum, Default)]
+#[serde(rename_all = "kebab-case")]
+#[value(rename_all = "kebab-case")]
+pub enum BackendKind {
+    #[default]
+    Huggingface,
+    Gemini,
+}
+
+impl BackendKind {
+    /// The plain-string label `mate-tui`'s `SessionDefaults::backend_name` carries — `mate-tui`
+    /// sits below `mate-cli` in the dependency graph, so it can't name `BackendKind` itself.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Huggingface => "huggingface",
+            Self::Gemini => "gemini",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub model: String,
+    pub backend: BackendKind,
     pub sub_provider: Option<String>,
     pub max_sessions: usize,
     pub max_turns: usize,
@@ -35,6 +60,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             model: "Qwen/Qwen3-Coder-30B-A3B-Instruct".to_string(),
+            backend: BackendKind::default(),
             sub_provider: None,
             max_sessions: 8,
             max_turns: 12,
@@ -168,6 +194,9 @@ pub fn load(cli: &Cli) -> anyhow::Result<Config> {
 fn apply_flags(config: &mut Config, cli: &Cli) {
     if let Some(model) = &cli.model {
         config.model = model.clone();
+    }
+    if let Some(backend) = cli.backend {
+        config.backend = backend;
     }
     if let Some(provider) = &cli.provider {
         config.sub_provider = Some(provider.clone());
@@ -304,6 +333,32 @@ mod tests {
 
             let config = load(&cli(&["--model", "from-flag"])).unwrap();
             assert_eq!(config.model, "from-flag");
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn backend_defaults_to_huggingface() {
+        Jail::expect_with(|jail| {
+            jail.clear_env();
+            let home = jail.directory().display().to_string();
+            jail.set_env("HOME", home);
+
+            let config = load(&cli(&[])).unwrap();
+            assert_eq!(config.backend, BackendKind::Huggingface);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn backend_flag_selects_gemini() {
+        Jail::expect_with(|jail| {
+            jail.clear_env();
+            let home = jail.directory().display().to_string();
+            jail.set_env("HOME", home);
+
+            let config = load(&cli(&["--backend", "gemini"])).unwrap();
+            assert_eq!(config.backend, BackendKind::Gemini);
             Ok(())
         });
     }

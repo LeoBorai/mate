@@ -6,6 +6,8 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
+use crate::config::BackendKind;
+
 #[derive(Parser, Debug, Clone)]
 #[command(name = "mate", version, about = "A terminal coding agent")]
 pub struct Cli {
@@ -19,6 +21,10 @@ pub struct Cli {
     /// Subagent model; defaults to the root model if unset.
     #[arg(long)]
     pub subagent_model: Option<String>,
+
+    /// Provider backend to talk to.
+    #[arg(long)]
+    pub backend: Option<BackendKind>,
 
     /// HuggingFace sub-provider.
     #[arg(long)]

@@ -6,8 +6,13 @@ Layered with `figment`, in `mate-cli/src/config.rs`:
 flags → env (MATE_*) → ./.mate.toml (or --config) → ~/.config/mate/config.toml → defaults
 ```
 
-- `Config`, `ToolsConfig`, `PanelConfig`, `PricingEntry` live in
-  `mate-cli/src/config.rs` — the CLI-facing shape.
+- `Config`, `ToolsConfig`, `PanelConfig`, `PricingEntry`, `BackendKind` live in
+  `mate-cli/src/config.rs` — the CLI-facing shape. `BackendKind`
+  (`huggingface`/`gemini`, default `huggingface`) picks which
+  `mate_core::backend::Backend` path the whole process talks through —
+  `--backend`/`Config::backend`, distinct from `--provider`/`sub_provider`
+  (an HF-only partner choice). `plain::build_backend` is the one place that
+  turns `Config::backend` into a real `Backend`; both frontends call it.
 - `DelegationPolicy`, `HttpPolicy`, `HttpAccessPolicy`, `AgentSpec`,
   `SessionSpec` live in `mate-core/src/config.rs` — the shared, provider-facing
   shape that both the CLI and (eventually) the session manager build from.
