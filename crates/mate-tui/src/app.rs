@@ -32,7 +32,7 @@
 //! into a subagent (§7.6).
 
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crossterm::event::{
     DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEvent, KeyEventKind,
@@ -42,12 +42,13 @@ use futures::StreamExt;
 use mate_core::cost::{ModelRate, estimate_cost};
 use mate_core::session::{SessionCmd, SessionEvent, SessionHandle, SessionId, SessionManager};
 use mate_core::streaming::{AgentEvent, UsageRollup};
-use mate_tool_api::{AgentId, SkillMetadata};
+use mate_tool_api::{AgentId, DiffLine, SkillMetadata, ToolActivity};
 use std::collections::{HashMap, VecDeque};
 use tokio::sync::mpsc;
 use tokio::time::{Duration, Interval, MissedTickBehavior, interval};
 use ulid::Ulid;
 
+use crate::highlight::{ApprovalPreviewCache, PreviewCache};
 use crate::input::InputBox;
 use crate::panel::Panel;
 use crate::panel_widgets::{PanelFocus, PanelWidgetKind};
@@ -120,6 +121,9 @@ pub(crate) struct PendingApproval {
     pub(crate) name: String,
     pub(crate) detail: String,
     pub(crate) path: Option<PathBuf>,
+    /// The before/after line diff to show in the approval modal, before the decision is made
+    /// (§ write_file diff) — `None` for a request with nothing to diff.
+    pub(crate) diff: Option<Vec<DiffLine>>,
 }
 
 /// The three choices `M13-6`'s approval modal offers, cycled with `↑`/`↓` and confirmed with
@@ -158,6 +162,9 @@ struct SessionTab {
     root: PathBuf,
     transcript: Transcript,
     wrap: WrapCache,
+    /// `write_file` diff previews (§ write_file diff), keyed by transcript entry id — a sibling
+    /// cache to `wrap`, same "computed once, cleared on `/clear`" lifecycle.
+    previews: PreviewCache,
     input: InputBox,
     scroll: usize,
     running_turn: bool,
@@ -187,6 +194,10 @@ struct SessionTab {
     /// `M13-2`'s approval queue — front is what `App::view` renders and `handle_approval_key`
     /// decides; anything behind it just waits.
     pending_approvals: VecDeque<PendingApproval>,
+    /// Syntax-highlighted diff rows for the front of `pending_approvals`, when it carries one
+    /// (§ write_file diff before applying) — a sibling cache to `previews`, keyed by the
+    /// request's id instead of a transcript entry id since the modal isn't one.
+    approval_preview: ApprovalPreviewCache,
     /// Index into [`ApprovalOption::ALL`] highlighted for the front of `pending_approvals`
     /// (`M13-6`) — `↑`/`↓` moves it, `Enter` confirms it. Reset to `0` every time a request is
     /// popped off the queue (`App::resolve_approval`), so the next one always opens on
@@ -226,6 +237,7 @@ impl SessionTab {
             root,
             transcript: Transcript::new(),
             wrap: WrapCache::new(),
+            previews: PreviewCache::new(),
             input: InputBox::new(),
             scroll: 0,
             running_turn: false,
@@ -239,6 +251,7 @@ impl SessionTab {
             panel_focus: None,
             detail_modal: None,
             pending_approvals: VecDeque::new(),
+            approval_preview: ApprovalPreviewCache::new(),
             approval_selection: 0,
             http_enabled,
             may_delegate,
@@ -440,6 +453,13 @@ impl App {
                 detail: &a.detail,
                 queued: tab.pending_approvals.len().saturating_sub(1),
                 allow_dir: allow_dir(a.path.as_deref()).map(|dir| dir.display().to_string()),
+                diff: a.diff.as_deref().map(|diff| {
+                    tab.approval_preview.rows(
+                        a.id,
+                        a.path.as_deref().unwrap_or_else(|| Path::new("")),
+                        diff,
+                    )
+                }),
                 selected: approval_selection,
             });
         AppView {
@@ -451,6 +471,7 @@ impl App {
             session: ui::View {
                 transcript: &tab.transcript,
                 wrap: &mut tab.wrap,
+                previews: &mut tab.previews,
                 input: &tab.input,
                 root: &tab.root,
                 panel_visible: tab.panel_visible,
@@ -496,6 +517,11 @@ impl App {
             AgentEvent::Activity(record) => {
                 if event.agent != AgentId::ROOT {
                     tab.roster.note_activity(event.agent, record);
+                } else if let ToolActivity::FileDiff { path, diff } = record {
+                    // Display-only (§ write_file diff): the transcript stays root-only (§9.9)
+                    // even though the panel below shows every agent's activity.
+                    tab.transcript
+                        .attach_preview("write_file", path.clone(), diff.clone());
                 }
                 tab.panel.push(event.agent, record.clone());
                 if !is_active {
@@ -526,6 +552,7 @@ impl App {
                 name,
                 detail,
                 path,
+                diff,
             } => {
                 if event.agent != AgentId::ROOT {
                     tab.roster.awaiting_approval(event.agent);
@@ -536,6 +563,7 @@ impl App {
                     name: name.clone(),
                     detail: detail.clone(),
                     path: path.clone(),
+                    diff: diff.clone(),
                 });
                 if !is_active {
                     tab.needs_attention = true;
@@ -1181,6 +1209,7 @@ impl App {
         let tab = &mut self.tabs[self.active];
         tab.transcript = Transcript::new();
         tab.wrap = WrapCache::new();
+        tab.previews = PreviewCache::new();
         tab.scroll = 0;
     }
 
@@ -1446,7 +1475,7 @@ mod tests {
 
     use mate_core::backend::Backend;
     use mate_core::config::{AgentSpec, DelegationPolicy, HttpPolicy, SessionSpec};
-    use mate_tool_api::{SubagentOutcome, ToolCtx};
+    use mate_tool_api::{DiffTag, SubagentOutcome, ToolCtx};
     use mate_tool_http::HttpShared;
     use tokio_util::sync::CancellationToken;
 
@@ -1988,6 +2017,7 @@ mod tests {
             name: "http_request".to_string(),
             detail: "POST https://example.com".to_string(),
             path: None,
+            diff: None,
         }
     }
 
@@ -1997,6 +2027,10 @@ mod tests {
             name: "write_file".to_string(),
             detail: "create a.txt".to_string(),
             path: Some(path),
+            diff: Some(vec![DiffLine {
+                tag: DiffTag::Insert,
+                text: "hello".to_string(),
+            }]),
         }
     }
 
@@ -2143,6 +2177,30 @@ mod tests {
         assert_eq!(
             app.tabs[0].approval_selection, 0,
             "the selection must reset to Allow for whatever request comes next"
+        );
+    }
+
+    #[test]
+    fn view_carries_the_pending_writes_diff_for_the_approval_modal() {
+        let mut app = test_app(1);
+        let session = app.tabs[0].id;
+        app.on_session_event(SessionEvent {
+            session,
+            agent: AgentId::ROOT,
+            event: write_approval_required(Ulid::generate(), PathBuf::from("/workspace/src/a.txt")),
+        });
+
+        let view = app.view();
+        let diff = view
+            .approval_modal
+            .expect("a pending write approval must render a modal")
+            .diff
+            .expect("write_approval_required carries a diff, so the modal must too");
+        assert_eq!(
+            diff.len(),
+            1,
+            "the modal must show the same one-line diff write_approval_required attached, \
+             before any decision is made"
         );
     }
 
