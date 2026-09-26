@@ -27,15 +27,23 @@ use std::sync::Arc;
 
 use mate_tool_api::ToolCtx;
 use mate_tool_http::HttpShared;
+use mate_tool_mcp::McpServers;
 use rig::tool::server::{ToolServer, ToolServerHandle};
 
 use crate::config::{HttpAccessPolicy, HttpPolicy};
 use crate::preamble::ToolDescriptor;
 
+/// `mcp` is `Option<&Arc<McpServers>>`, not a plain `Arc<McpServers>`, so a subagent's toolset
+/// can never attach `mcp` even by accident: `crate::subagent::SubagentRunner` never holds an
+/// `Arc<McpServers>` at all, so its own `build_agent`/`build_toolset` call sites structurally
+/// only ever have `None` to pass — the same "type system enforces it" shape `M9-4`'s
+/// non-addressability guardrail already uses, rather than a boolean flag someone could set
+/// wrong (spec: "No MCP tools for subagents").
 pub fn build_toolset(
     ctx: ToolCtx,
     http_policy: &HttpPolicy,
     http_shared: Arc<HttpShared>,
+    mcp: Option<&Arc<McpServers>>,
 ) -> ToolServerHandle {
     let mut builder = ToolServer::new()
         .tool(mate_tool_fs::ReadFile::new(ctx.clone()))
@@ -52,6 +60,9 @@ pub fn build_toolset(
     }
     if !ctx.skills.is_empty() {
         builder = builder.tool(mate_tool_skills::Skill::new(ctx.clone()));
+    }
+    if let Some(servers) = mcp.filter(|servers| servers.has_active_servers()) {
+        builder = builder.tool(mate_tool_mcp::McpProxy::new(ctx.clone(), servers.clone()));
     }
     if ctx.spawner.is_some() {
         builder = builder.tool(mate_tool_agent::SpawnAgent::new(ctx));
@@ -70,6 +81,7 @@ pub fn tool_descriptors(
     may_delegate: bool,
     http_enabled: bool,
     skills_enabled: bool,
+    mcp_enabled: bool,
 ) -> Vec<ToolDescriptor> {
     let mut descriptors = vec![
         ToolDescriptor::new(
@@ -113,6 +125,14 @@ pub fn tool_descriptors(
              read_file/find_files) followed by its complete instructions.",
         ));
     }
+    if mcp_enabled {
+        descriptors.push(ToolDescriptor::new(
+            "mcp",
+            "Call a tool exposed by a configured MCP (Model Context Protocol) server. Pass \
+             the server name, the tool name, and arguments matching that tool's schema — see \
+             the tool's own description for which servers and tools are currently available.",
+        ));
+    }
     if may_delegate {
         descriptors.push(ToolDescriptor::new(
             "spawn_agent",
@@ -134,10 +154,37 @@ mod tests {
     use mate_tool_api::{
         SkillMetadata, SubagentReport, SubagentRequest, SubagentSpawner, ToolFailure,
     };
+    use mate_tool_mcp::{McpServers, ServerSpec};
     use tokio_util::sync::CancellationToken;
 
     fn ctx(root: std::path::PathBuf) -> ToolCtx {
         ctx_with_skills(root, Vec::new())
+    }
+
+    /// A registry with zero configured servers — `has_active_servers()` is always `false`, the
+    /// same "no servers configured" starting point every process without an `[[mcp.servers]]`
+    /// entry has.
+    async fn empty_mcp() -> Arc<McpServers> {
+        Arc::new(McpServers::connect(Vec::new()).await)
+    }
+
+    /// A registry with one server whose command never speaks MCP (`false`, a real but silent
+    /// process) — it fails to initialize, so `has_active_servers()` stays `false` the same way
+    /// `empty_mcp` is, but exercises the "configured yet still absent" path rather than the
+    /// "nothing configured at all" one. Good enough for `build_toolset`'s attachment tests,
+    /// which only care whether the `mcp` tool is present or absent, not what it can route to.
+    #[cfg(unix)]
+    async fn failing_mcp() -> Arc<McpServers> {
+        Arc::new(
+            McpServers::connect(vec![ServerSpec {
+                name: "silent".to_string(),
+                command: "false".to_string(),
+                args: Vec::new(),
+                env: std::collections::HashMap::new(),
+                allow: Vec::new(),
+            }])
+            .await,
+        )
     }
 
     fn ctx_with_skills(root: std::path::PathBuf, skills: Vec<SkillMetadata>) -> ToolCtx {
@@ -192,6 +239,7 @@ mod tests {
             ctx(tmp.path().to_path_buf()),
             &http_policy(true),
             http_shared(),
+            None,
         );
 
         let mut names: Vec<String> = handle
@@ -223,6 +271,7 @@ mod tests {
             ctx(tmp.path().to_path_buf()),
             &http_policy(false),
             http_shared(),
+            None,
         );
 
         let mut names: Vec<String> = handle
@@ -245,7 +294,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mut c = ctx(tmp.path().to_path_buf());
         c.spawner = Some(Arc::new(StubSpawner) as Arc<dyn SubagentSpawner>);
-        let handle = build_toolset(c, &http_policy(true), http_shared());
+        let handle = build_toolset(c, &http_policy(true), http_shared(), None);
 
         let mut names: Vec<String> = handle
             .get_tool_defs(None)
@@ -277,6 +326,7 @@ mod tests {
             ctx_with_skills(tmp.path().to_path_buf(), vec![a_skill()]),
             &http_policy(false),
             http_shared(),
+            None,
         );
 
         let mut names: Vec<String> = handle
@@ -297,7 +347,7 @@ mod tests {
 
     #[test]
     fn tool_descriptors_match_the_attached_toolset_without_delegation_http_or_skills() {
-        let descriptors = tool_descriptors(false, false, false);
+        let descriptors = tool_descriptors(false, false, false, false);
         let mut names: Vec<&str> = descriptors.iter().map(|t| t.name.as_str()).collect();
         names.sort();
         assert_eq!(
@@ -310,7 +360,7 @@ mod tests {
 
     #[test]
     fn tool_descriptors_include_http_request_when_enabled() {
-        let descriptors = tool_descriptors(false, true, false);
+        let descriptors = tool_descriptors(false, true, false, false);
         let mut names: Vec<&str> = descriptors.iter().map(|t| t.name.as_str()).collect();
         names.sort();
         assert_eq!(
@@ -327,7 +377,7 @@ mod tests {
 
     #[test]
     fn tool_descriptors_include_skill_when_skills_are_enabled() {
-        let descriptors = tool_descriptors(false, false, true);
+        let descriptors = tool_descriptors(false, false, true, false);
         let mut names: Vec<&str> = descriptors.iter().map(|t| t.name.as_str()).collect();
         names.sort();
         assert_eq!(
@@ -338,7 +388,7 @@ mod tests {
 
     #[test]
     fn tool_descriptors_include_spawn_agent_when_delegation_is_enabled() {
-        let descriptors = tool_descriptors(true, true, false);
+        let descriptors = tool_descriptors(true, true, false, false);
         let mut names: Vec<&str> = descriptors.iter().map(|t| t.name.as_str()).collect();
         names.sort();
         assert_eq!(
@@ -353,6 +403,156 @@ mod tests {
             ],
             "descriptors must match build_toolset's own attachment set for may_delegate: true, \
              http_enabled: true, skills_enabled: false"
+        );
+    }
+
+    #[test]
+    fn tool_descriptors_include_mcp_when_enabled() {
+        let descriptors = tool_descriptors(false, false, false, true);
+        let mut names: Vec<&str> = descriptors.iter().map(|t| t.name.as_str()).collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec!["find_files", "list_dir", "mcp", "read_file", "write_file"]
+        );
+    }
+
+    // --- `mcp` attachment (`M`-shaped, `add-mcp-support` §5.2): zero servers, servers present \
+    // but none ready, and a subagent's structural exclusion ------------------------------------
+
+    #[tokio::test]
+    async fn does_not_attach_mcp_when_no_registry_is_passed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let handle = build_toolset(
+            ctx(tmp.path().to_path_buf()),
+            &http_policy(false),
+            http_shared(),
+            None,
+        );
+
+        let names: Vec<String> = handle
+            .get_tool_defs(None)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|def| def.name)
+            .collect();
+
+        assert!(
+            !names.contains(&"mcp".to_string()),
+            "mcp must be absent when build_toolset is called with mcp: None — the only way a \
+             subagent's own build_toolset call site is structurally guaranteed to behave, since \
+             SubagentRunner never holds an Arc<McpServers> to pass Some with"
+        );
+    }
+
+    #[tokio::test]
+    async fn does_not_attach_mcp_when_the_registry_has_no_configured_servers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mcp = empty_mcp().await;
+        let handle = build_toolset(
+            ctx(tmp.path().to_path_buf()),
+            &http_policy(false),
+            http_shared(),
+            Some(&mcp),
+        );
+
+        let names: Vec<String> = handle
+            .get_tool_defs(None)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|def| def.name)
+            .collect();
+
+        assert!(
+            !names.contains(&"mcp".to_string()),
+            "mcp must be absent when the registry has zero configured servers (spec: \"No \
+             servers configured\")"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn does_not_attach_mcp_when_every_configured_server_failed_to_initialize() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mcp = failing_mcp().await;
+        let handle = build_toolset(
+            ctx(tmp.path().to_path_buf()),
+            &http_policy(false),
+            http_shared(),
+            Some(&mcp),
+        );
+
+        let names: Vec<String> = handle
+            .get_tool_defs(None)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|def| def.name)
+            .collect();
+
+        assert!(
+            !names.contains(&"mcp".to_string()),
+            "mcp must be absent when every configured server failed to initialize (spec: \"No \
+             servers configured or initialized\")"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn attaches_mcp_when_the_registry_has_a_ready_server() {
+        let tmp = tempfile::tempdir().unwrap();
+        let handle = mate_tool_mcp::ServerHandle::test_ready("demo", Vec::new(), Vec::new());
+        let mcp = Arc::new(McpServers::test_with_ready(handle));
+        let toolset = build_toolset(
+            ctx(tmp.path().to_path_buf()),
+            &http_policy(false),
+            http_shared(),
+            Some(&mcp),
+        );
+
+        let names: Vec<String> = toolset
+            .get_tool_defs(None)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|def| def.name)
+            .collect();
+
+        assert!(
+            names.contains(&"mcp".to_string()),
+            "mcp must attach for a root agent once the registry has at least one ready server"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_subagent_style_ctx_still_gets_no_mcp_tool_even_with_a_ready_registry() {
+        // `SubagentRunner::run` (`crate::subagent`) never holds an `Arc<McpServers>` at all, so
+        // its own `build_agent`/`build_toolset` call site can only ever pass `None` here — this
+        // test proves the `None` side of that guarantee does what the spec requires, standing
+        // in for a real subagent ToolCtx (which needs a whole SubagentRunner to construct).
+        let tmp = tempfile::tempdir().unwrap();
+        let handle = mate_tool_mcp::ServerHandle::test_ready("demo", Vec::new(), Vec::new());
+        let mcp = Arc::new(McpServers::test_with_ready(handle));
+        let mut subagent_ctx = ctx(tmp.path().to_path_buf());
+        subagent_ctx.agent = mate_tool_api::AgentId(1);
+
+        let toolset = build_toolset(subagent_ctx, &http_policy(false), http_shared(), None);
+
+        let names: Vec<String> = toolset
+            .get_tool_defs(None)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|def| def.name)
+            .collect();
+
+        assert!(
+            !names.contains(&"mcp".to_string()),
+            "no mcp tool must reach a subagent's toolset, spec's \"No MCP tools for subagents\", \
+             regardless of the registry a caller might otherwise have on hand"
         );
     }
 }

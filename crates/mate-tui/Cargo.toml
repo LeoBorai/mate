@@ -21,5 +21,6 @@ ulid = { workspace = true }
 
 [dev-dependencies]
 mate-tool-http = { workspace = true }
+mate-tool-mcp = { workspace = true }
 rig = { workspace = true }
 tempfile = { workspace = true }

@@ -1448,6 +1448,7 @@ mod tests {
     use mate_core::config::{AgentSpec, DelegationPolicy, HttpPolicy, SessionSpec};
     use mate_tool_api::{SubagentOutcome, ToolCtx};
     use mate_tool_http::HttpShared;
+    use mate_tool_mcp::McpServers;
     use tokio_util::sync::CancellationToken;
 
     use crate::roster::SubagentStatus;
@@ -1498,6 +1499,7 @@ mod tests {
             max_tokens: 512,
             max_turns: 4,
             http: HttpPolicy::default(),
+            mcp_enabled: false,
             delegation: DelegationPolicy::default(),
             max_output_bytes: 1_000_000,
             agents_md_enabled: true,
@@ -1513,7 +1515,8 @@ mod tests {
     fn test_app(n: usize) -> App {
         let backend = Arc::new(Backend::huggingface("dummy-key", None, None).unwrap());
         let http = Arc::new(HttpShared::new(60).unwrap());
-        let (mut manager, events_rx) = SessionManager::new(backend, http, 8);
+        let mcp = Arc::new(McpServers::empty());
+        let (mut manager, events_rx) = SessionManager::new(backend, http, mcp, 8);
         let mut sessions = Vec::new();
         for i in 0..n {
             let handle = manager.spawn(&spec(&format!("s{i}")), ctx()).unwrap();

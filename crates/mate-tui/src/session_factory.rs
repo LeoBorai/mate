@@ -34,6 +34,12 @@ pub struct SessionDefaults {
     pub max_tokens: u64,
     pub max_turns: usize,
     pub http: HttpPolicy,
+    /// Whether the process-wide MCP registry (`mate_tool_mcp::McpServers`, built once at
+    /// startup by `mate-cli`) has at least one ready server — computed once, like `http` is
+    /// carried forward from config, since MCP has no per-tab narrowing to react to. `mate-tui`
+    /// doesn't depend on `mate-tool-mcp` itself; this plain bool is all `build_spec` needs to
+    /// decide whether the preamble's tool list mentions `mcp`.
+    pub mcp_enabled: bool,
     pub delegation: DelegationPolicy,
     pub max_output_bytes: usize,
     pub agents_md_enabled: bool,
@@ -63,7 +69,10 @@ impl SessionDefaults {
 /// Assembles one session's spec (§4, §5.1) from `defaults` plus the per-tab `root` and `title`.
 /// `http_enabled` overrides `defaults.http.enabled` only — the rest of the http policy (rate
 /// limit, public/localhost) stays shared, matching §7.4's "narrowing-only" rule for anything
-/// that scopes a tab down rather than up.
+/// that scopes a tab down rather than up. Unlike `http`, MCP has no per-tab narrowing today (no
+/// spawn-form toggle asks for one), so `defaults.mcp_enabled` — computed once at startup from
+/// the process-wide registry, the same way `defaults.http` itself starts from the loaded config
+/// — is read directly here rather than threaded through as a call-site override.
 pub fn build_spec(
     defaults: &SessionDefaults,
     root: &Path,
@@ -91,6 +100,7 @@ pub fn build_spec(
             defaults.delegation.enabled,
             http_enabled,
             !skills.is_empty(),
+            defaults.mcp_enabled,
         ),
         &skill_descriptors,
         agents_md.as_ref(),
@@ -157,6 +167,7 @@ mod tests {
             max_tokens: 512,
             max_turns: 4,
             http: HttpPolicy::default(),
+            mcp_enabled: false,
             delegation: DelegationPolicy::default(),
             max_output_bytes: 1_000_000,
             agents_md_enabled: true,

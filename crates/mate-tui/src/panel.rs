@@ -128,6 +128,9 @@ impl Panel {
                     row.active = true;
                 }
             }
+            // No dedicated widget yet — the panel wiring for MCP calls is a follow-on
+            // (`add-mcp-support`'s proposal), same as `Note` gets no row of its own.
+            ToolActivity::McpCall { .. } => {}
         }
     }
 }

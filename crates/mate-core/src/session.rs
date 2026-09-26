@@ -56,6 +56,7 @@ use std::sync::Arc;
 
 use mate_tool_api::{AgentId, ToolCtx};
 use mate_tool_http::HttpShared;
+use mate_tool_mcp::McpServers;
 use rig::agent::Agent;
 use rig::completion::{CompletionModel, GetTokenUsage, Message};
 use slotmap::SlotMap;
@@ -169,19 +170,30 @@ const CMD_CHANNEL_CAPACITY: usize = 8;
 pub struct SessionManager {
     backend: Arc<Backend>,
     http: Arc<HttpShared>,
+    /// Every root session this manager spawns gets `Some(&self.mcp)` passed into
+    /// [`build_agent`] (`crate::toolset::build_toolset`'s doc comment explains why this is the
+    /// mechanism behind "no MCP tools for subagents" — [`SubagentRunner`] never holds one of
+    /// these to pass on). A registry with zero configured servers is `has_active_servers() ==
+    /// false`, so this is unconditionally built and stored, never `Option`-wrapped itself —
+    /// same shape as `http` above, which is likewise always present regardless of whether
+    /// `[http]` is globally enabled.
+    mcp: Arc<McpServers>,
     events_tx: mpsc::Sender<SessionEvent>,
     sessions: SlotMap<SessionId, SessionHandle>,
     max_sessions: usize,
 }
 
 impl SessionManager {
-    /// Builds a manager sharing `backend` and `http` (§5.3: one process-wide DNS resolver and
-    /// per-host rate limiter, same reasoning as the shared HF client) across every session it
-    /// spawns, plus the single bounded event channel (§5.2) every session forwards into.
-    /// Returns the receiving end for the caller (the TUI, from `M7` on) to poll.
+    /// Builds a manager sharing `backend`, `http` (§5.3: one process-wide DNS resolver and
+    /// per-host rate limiter, same reasoning as the shared HF client), and `mcp` (built once by
+    /// the caller via `mate_tool_mcp::McpServers::connect`, the same "spawn once, share the
+    /// `Arc`" shape) across every session it spawns, plus the single bounded event channel
+    /// (§5.2) every session forwards into. Returns the receiving end for the caller (the TUI,
+    /// from `M7` on) to poll.
     pub fn new(
         backend: Arc<Backend>,
         http: Arc<HttpShared>,
+        mcp: Arc<McpServers>,
         max_sessions: usize,
     ) -> (Self, mpsc::Receiver<SessionEvent>) {
         let (events_tx, events_rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
@@ -189,6 +201,7 @@ impl SessionManager {
             Self {
                 backend,
                 http,
+                mcp,
                 events_tx,
                 sessions: SlotMap::with_key(),
                 max_sessions,
@@ -279,7 +292,7 @@ impl SessionManager {
 
         tokio::spawn(drain_activity(id, activity_rx, events_tx.clone()));
 
-        let built = build_agent(&self.backend, &self.http, &spec.agent, ctx);
+        let built = build_agent(&self.backend, &self.http, Some(&self.mcp), &spec.agent, ctx);
 
         match built {
             BuiltAgent::HuggingFace(agent) => spawn_supervised(
@@ -583,6 +596,13 @@ mod tests {
 
     fn http_shared() -> Arc<HttpShared> {
         Arc::new(HttpShared::new(60).unwrap())
+    }
+
+    /// An always-empty registry — no test in this module exercises MCP behavior directly
+    /// (that's `crate::toolset`'s and `mate_tool_mcp`'s own test suites); this just satisfies
+    /// `SessionManager::new`'s now-mandatory `mcp` parameter.
+    fn mcp_shared() -> Arc<McpServers> {
+        Arc::new(McpServers::empty())
     }
 
     /// `M11-4`: `drain_activity` must fold every `(AgentId, ToolActivity)` record onto the
@@ -913,7 +933,7 @@ mod tests {
         let backend = Arc::new(
             Backend::huggingface("dummy-key", None, None).expect("offline client construction"),
         );
-        let (mut manager, _events) = SessionManager::new(backend, http_shared(), 1);
+        let (mut manager, _events) = SessionManager::new(backend, http_shared(), mcp_shared(), 1);
 
         let spec = crate::config::SessionSpec {
             title: "t".to_string(),
@@ -958,7 +978,7 @@ mod tests {
         let backend = Arc::new(
             Backend::huggingface("dummy-key", None, None).expect("offline client construction"),
         );
-        let (mut manager, _events) = SessionManager::new(backend, http_shared(), 1);
+        let (mut manager, _events) = SessionManager::new(backend, http_shared(), mcp_shared(), 1);
 
         let spec = crate::config::SessionSpec {
             title: "t".to_string(),
@@ -1014,7 +1034,7 @@ mod tests {
         let backend = Arc::new(
             Backend::huggingface("dummy-key", None, None).expect("offline client construction"),
         );
-        let (mut manager, _events) = SessionManager::new(backend, http_shared(), 1);
+        let (mut manager, _events) = SessionManager::new(backend, http_shared(), mcp_shared(), 1);
 
         let spec = crate::config::SessionSpec {
             title: "t".to_string(),

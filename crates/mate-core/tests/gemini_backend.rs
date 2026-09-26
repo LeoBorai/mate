@@ -35,6 +35,7 @@ async fn build_agent_attaches_the_fs_toolset_on_the_gemini_path() {
     let agent = match build_agent(
         &backend,
         &support::http_shared(),
+        Some(&support::mcp_shared()),
         &stub_agent_spec(),
         support::tool_ctx(tmp.path().to_path_buf()),
     ) {
