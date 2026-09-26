@@ -54,6 +54,7 @@ pub struct McpConfig {
 /// duplicate names across servers.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 pub struct McpServerConfig {
     pub name: String,
     pub transport: McpTransport,
@@ -63,19 +64,6 @@ pub struct McpServerConfig {
     /// Tool names this server's calls may run unattended. Empty means every call to this
     /// server is refused, though its proxy entry still attaches (spec: "Empty allow-list").
     pub allow: Vec<String>,
-}
-
-impl Default for McpServerConfig {
-    fn default() -> Self {
-        Self {
-            name: String::new(),
-            transport: McpTransport::default(),
-            command: String::new(),
-            args: Vec::new(),
-            env: HashMap::new(),
-            allow: Vec::new(),
-        }
-    }
 }
 
 /// This change supports stdio only (`proposal.md`'s non-goals: remote transports are a

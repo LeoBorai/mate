@@ -258,8 +258,8 @@ async fn connect_one(spec: &ServerSpec) -> Result<ServerHandle, String> {
     .map_err(|_| "timed out waiting for tools/list response".to_string())?
     .map_err(|err| err.to_string())?;
 
-    let parsed: ToolsListResult =
-        serde_json::from_value(list).map_err(|err| format!("invalid tools/list response: {err}"))?;
+    let parsed: ToolsListResult = serde_json::from_value(list)
+        .map_err(|err| format!("invalid tools/list response: {err}"))?;
 
     Ok(ServerHandle {
         name: spec.name.clone(),

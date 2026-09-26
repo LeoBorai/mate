@@ -96,9 +96,8 @@ impl PortableTool for McpProxy {
         // Pretty-printed JSON, matching `http_request`'s own "pretty-print structured output
         // for the model" default — the raw `Value` a server returns is rarely meant to be read
         // as a single unbroken line.
-        outcome.map(|value| {
-            serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string())
-        })
+        outcome
+            .map(|value| serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()))
     }
 }
 
@@ -138,7 +137,10 @@ mod tests {
 
     use tokio_util::sync::CancellationToken;
 
-    fn ctx() -> (ToolCtx, tokio::sync::mpsc::Receiver<(mate_tool_api::AgentId, ToolActivity)>) {
+    fn ctx() -> (
+        ToolCtx,
+        tokio::sync::mpsc::Receiver<(mate_tool_api::AgentId, ToolActivity)>,
+    ) {
         let (activity, rx) = tokio::sync::mpsc::channel(8);
         (
             ToolCtx {
@@ -209,7 +211,10 @@ mod tests {
     #[tokio::test]
     async fn empty_registry_describe_says_nothing_is_available() {
         let servers = McpServers::empty();
-        assert_eq!(servers.describe(), "No MCP servers are currently available.");
+        assert_eq!(
+            servers.describe(),
+            "No MCP servers are currently available."
+        );
     }
 
     #[test]
@@ -255,10 +260,7 @@ mod tests {
             "an unadvertised tool must refuse with NotFound"
         );
         let (_, activity) = rx.try_recv().expect("stage (b)+ refusals do emit McpCall");
-        assert!(matches!(
-            activity,
-            ToolActivity::McpCall { ok: false, .. }
-        ));
+        assert!(matches!(activity, ToolActivity::McpCall { ok: false, .. }));
     }
 
     /// `ServerHandle::test_ready` wraps a real `cat` process (see its own doc comment), which
@@ -293,7 +295,9 @@ mod tests {
              just that it didn't error"
         );
 
-        let (_, activity) = rx.try_recv().expect("a successful call must still emit McpCall");
+        let (_, activity) = rx
+            .try_recv()
+            .expect("a successful call must still emit McpCall");
         assert!(
             matches!(
                 activity,
@@ -334,9 +338,6 @@ mod tests {
             "an advertised-but-not-allow-listed tool must refuse with Denied, not NotFound"
         );
         let (_, activity) = rx.try_recv().expect("stage (b)+ refusals do emit McpCall");
-        assert!(matches!(
-            activity,
-            ToolActivity::McpCall { ok: false, .. }
-        ));
+        assert!(matches!(activity, ToolActivity::McpCall { ok: false, .. }));
     }
 }

@@ -177,43 +177,40 @@ impl StdioTransport {
 /// response to a pending request by `id` and completing that request's oneshot. On EOF (the
 /// process exited or closed stdout), flips `dead` and fails every still-pending request with a
 /// descriptive error instead of leaving its caller hanging forever.
-async fn read_loop(stdout: tokio::process::ChildStdout, pending: PendingMap, dead: Arc<AtomicBool>) {
+async fn read_loop(
+    stdout: tokio::process::ChildStdout,
+    pending: PendingMap,
+    dead: Arc<AtomicBool>,
+) {
     let mut lines = BufReader::new(stdout).lines();
-    loop {
-        match lines.next_line().await {
-            Ok(Some(line)) => {
-                if line.trim().is_empty() {
-                    continue;
-                }
-                let Ok(inbound) = serde_json::from_str::<JsonRpcInbound>(&line) else {
-                    // A line mate can't parse as JSON-RPC is a confused server, not this
-                    // client's problem to crash over — skip it and keep reading.
-                    continue;
-                };
-                let Some(id) = inbound.id else {
-                    continue;
-                };
-                if let Some(tx) = pending.lock().await.remove(&id) {
-                    let result = match (inbound.result, inbound.error) {
-                        // JSON-RPC 2.0's standard "Invalid params" code — the one server-side
-                        // error this client distinguishes, since `mate_tool_mcp::McpProxy`
-                        // reports a malformed `arguments` value back to the model as
-                        // `ToolFailure::InvalidArgs` rather than the generic `Other`.
-                        (_, Some(err)) if err.code == -32602 => {
-                            Err(ToolFailure::InvalidArgs(err.message))
-                        }
-                        (_, Some(err)) => Err(ToolFailure::Other(anyhow::anyhow!(
-                            "mcp error {}: {}",
-                            err.code,
-                            err.message
-                        ))),
-                        (Some(value), None) => Ok(value),
-                        (None, None) => Ok(Value::Null),
-                    };
-                    let _ = tx.send(result);
-                }
-            }
-            Ok(None) | Err(_) => break,
+    while let Ok(Some(line)) = lines.next_line().await {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(inbound) = serde_json::from_str::<JsonRpcInbound>(&line) else {
+            // A line mate can't parse as JSON-RPC is a confused server, not this
+            // client's problem to crash over — skip it and keep reading.
+            continue;
+        };
+        let Some(id) = inbound.id else {
+            continue;
+        };
+        if let Some(tx) = pending.lock().await.remove(&id) {
+            let result = match (inbound.result, inbound.error) {
+                // JSON-RPC 2.0's standard "Invalid params" code — the one server-side
+                // error this client distinguishes, since `mate_tool_mcp::McpProxy`
+                // reports a malformed `arguments` value back to the model as
+                // `ToolFailure::InvalidArgs` rather than the generic `Other`.
+                (_, Some(err)) if err.code == -32602 => Err(ToolFailure::InvalidArgs(err.message)),
+                (_, Some(err)) => Err(ToolFailure::Other(anyhow::anyhow!(
+                    "mcp error {}: {}",
+                    err.code,
+                    err.message
+                ))),
+                (Some(value), None) => Ok(value),
+                (None, None) => Ok(Value::Null),
+            };
+            let _ = tx.send(result);
         }
     }
 

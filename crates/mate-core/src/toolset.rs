@@ -535,7 +535,7 @@ mod tests {
         // in for a real subagent ToolCtx (which needs a whole SubagentRunner to construct).
         let tmp = tempfile::tempdir().unwrap();
         let handle = mate_tool_mcp::ServerHandle::test_ready("demo", Vec::new(), Vec::new());
-        let mcp = Arc::new(McpServers::test_with_ready(handle));
+        let _mcp = Arc::new(McpServers::test_with_ready(handle));
         let mut subagent_ctx = ctx(tmp.path().to_path_buf());
         subagent_ctx.agent = mate_tool_api::AgentId(1);
 
