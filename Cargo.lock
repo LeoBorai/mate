@@ -4795,12 +4795,12 @@ dependencies = [
 name = "mate-tool-mcp"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "mate-tool-api",
  "rig",
  "schemars 1.2.2",
  "serde",
  "serde_json",
- "thiserror 2.0.20",
  "tokio",
  "tokio-util",
  "tracing",
