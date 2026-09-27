@@ -6,6 +6,7 @@
 //! (§9). `Ctrl+T` opens a new tab via [`build_spec`]; `Ctrl+W` closes the active one.
 
 mod app;
+mod highlight;
 mod input;
 mod panel;
 mod panel_widgets;

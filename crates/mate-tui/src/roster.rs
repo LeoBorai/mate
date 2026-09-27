@@ -186,6 +186,13 @@ fn derive_activity(activity: &ToolActivity) -> String {
                 format!("mcp {server}/{tool} failed")
             }
         }
+        // Companion record to the `FileTouched` a `write_file` call already sent moments
+        // earlier (§ write_file diff) — same phrasing, so this just re-affirms the same line
+        // rather than showing anything new.
+        ToolActivity::FileDiff { path, .. } => {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+            format!("writing {name}")
+        }
     };
     truncate_end(&text, ACTIVITY_CHARS)
 }

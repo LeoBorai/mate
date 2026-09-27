@@ -26,7 +26,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use futures::{Stream, StreamExt};
-use mate_tool_api::{AgentId, SubagentOutcome, ToolActivity};
+use mate_tool_api::{AgentId, DiffLine, SubagentOutcome, ToolActivity};
 use rig::OneOrMany;
 use rig::agent::{Agent, MultiTurnStreamItem, StreamingError};
 use rig::completion::{CompletionModel, GetTokenUsage, Message, PromptError, Usage};
@@ -61,6 +61,11 @@ pub enum AgentEvent {
         /// directory it offers to remember). `None` for a request with no single filesystem
         /// target.
         path: Option<PathBuf>,
+        /// The same before/after line diff `write_file` also attaches to its transcript entry
+        /// after the fact (`ToolActivity::FileDiff`), carried here so the approval modal can
+        /// show it before a human decides rather than only after (§ write_file diff). `None`
+        /// for a request with nothing to diff (every non-`write_file` approval today).
+        diff: Option<Vec<DiffLine>>,
     },
     SubagentSpawned {
         id: AgentId,

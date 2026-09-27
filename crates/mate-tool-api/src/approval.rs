@@ -15,6 +15,7 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 
 use crate::AgentId;
+use crate::activity::DiffLine;
 
 /// One approval request (§7.4): `agent` is who's asking (root or a subagent, so the UI can
 /// label a subagent's request distinctly — "subagent `deps` wants to POST to …"), `name` is the
@@ -22,13 +23,17 @@ use crate::AgentId;
 /// `path` carries the resolved, in-jail target of a filesystem action, when there is one — an
 /// `Approvals` implementation can use it to remember a scope (e.g. "always allow writes under
 /// this directory") without that scope ever being free text a human typed, which would be the
-/// back door `detail` alone is deliberately not.
+/// back door `detail` alone is deliberately not. `diff`, when there is one, is the same
+/// before/after line diff `write_file` also attaches to its transcript entry after the fact
+/// (`ToolActivity::FileDiff`) — computed once, before the write, and handed to both so a human
+/// can review the actual change before granting it rather than only after.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApprovalRequest {
     pub agent: AgentId,
     pub name: String,
     pub detail: String,
     pub path: Option<PathBuf>,
+    pub diff: Option<Vec<DiffLine>>,
 }
 
 /// Requests a binary decision on one risky action and blocks until it's made. The answer is
