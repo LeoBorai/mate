@@ -223,6 +223,66 @@ None`). Intermediate *followed* redirect hops get no record of their own —
 the network log shows one row per `http_request` call, with `redirects`
 naming how many hops it took.
 
+## `mate-tool-mcp` — `mcp`, MCP (Model Context Protocol) client support
+
+Stdio transport only (remote HTTP/SSE servers are out of scope — see
+`config.md`'s `[[mcp.servers]]` section for the config shape). This crate
+hand-rolls the JSON-RPC 2.0 / MCP stdio wire protocol on `tokio::process`/
+`tokio::io` rather than pulling in a third-party MCP client crate: the wire
+protocol is a small, stable, publicly documented shape, while a crate's
+Rust-level API is exactly the kind of detail this repo's hard rule against
+running `cargo` means nothing here can verify by compiling. See
+`crates/mate-tool-mcp/src/lib.rs`'s module doc for the full reasoning.
+
+**One `mcp` tool for every configured server, not one tool per server.**
+`PortableTool::NAME` is a compile-time `const &'static str` with no
+per-instance override (true of every tool in this workspace — `read_file`,
+`write_file`, `list_dir`, `find_files`, `http_request`, `skill`), so N
+runtime-configured MCP servers can't each get a distinctly-named Rust type.
+`McpProxy` mirrors `mate-tool-skills::Skill`'s actual shape exactly: one
+tool (`NAME = "mcp"`), dispatching over a runtime-discovered set by an
+argument (`{server, tool, arguments}`) rather than exposing each
+MCP-advertised tool as its own top-level tool.
+
+**`McpServers` (`servers.rs`)** — the process-wide registry, built once by
+`mate-cli` via `McpServers::connect` and shared as an `Arc`, the same shape
+as `HttpShared` above. Holds each configured server's live stdio session
+(`ServerHandle`) or its failure reason. A server that fails to spawn or
+complete the MCP `initialize`/`tools/list` handshake (within a fixed 10s
+timeout) is recorded as failed and logged via `tracing::warn!` — it never
+aborts initializing the rest of the configured list. `has_active_servers()`
+gates whether `build_toolset` attaches `mcp` at all.
+
+**Three-stage refusal order (`proxy.rs`'s `McpProxy::call`)**, each with its
+own `ToolFailure` shape so the model can tell them apart: (a) the named
+server isn't configured or failed to initialize → `NotFound`, no activity
+emitted (never reached any real server); (b) the server never advertised
+the named tool → `NotFound`; (c) the tool is advertised but isn't on that
+server's configured `allow` list → `Denied`. Only past stage (a) does a
+call emit `ToolActivity::McpCall { server, tool, ok, ms }` — neither
+`FileTouched` nor `NetRequest` fits an MCP call, but it's the same
+"external system was contacted" telemetry class. No panel widget consumes
+it yet (`panel.rs`/`roster.rs` both have a no-op/short-line match arm for
+it) — that wiring is a follow-on.
+
+**Trust model**: config-time allow-listing, not per-call approval (unlike
+`write_file`). A tool on a server's `allow` list runs unattended the moment
+the model calls it — the same posture `http_request`'s `[http]` policy
+already uses (config decides once, not a runtime prompt per call).
+
+**Subagents never get `mcp`.** `build_toolset`'s `mcp` parameter is
+`Option<&Arc<McpServers>>`; `mate_core::subagent::SubagentRunner` never
+holds an `Arc<McpServers>` field at all, so its own `build_agent` call site
+structurally only ever has `None` to pass — the same "type system enforces
+it" shape `spawn_agent`'s `ctx.spawner`-gating already uses, not a boolean
+flag someone could set wrong.
+
+**Crash isolation.** A server dying mid-session (after successfully
+initializing) is detected by `StdioTransport`'s background reader task
+hitting EOF on the child's stdout: every request still waiting on that
+server fails immediately with a descriptive error instead of hanging, and
+every other tool and every other configured server keep working normally.
+
 ## Testing patterns
 
 - **`mate-tool-fs`**: `tempfile::TempDir` + `dunce::canonicalize`; every test
@@ -242,5 +302,14 @@ naming how many hops it took.
   directly with no server at all. `HttpShared::with_limits` exists so a
   "response too large" test can shrink `max_response_bytes` instead of
   actually transferring megabytes of fixture data.
+- **`mate-tool-mcp`**: no real MCP-speaking fixture server — refusal-stage
+  tests build a `ServerHandle` directly via `ServerHandle::test_ready`
+  (`#[cfg(unix)]`, spawns `cat` as a real-but-MCP-silent child process, so
+  `is_alive()` is genuinely `true` without ever answering a protocol
+  message a refusal-path test never sends) and `McpServers::test_with_ready`
+  to wire it into a registry without going through `connect`'s real
+  handshake. Both are plain `pub` functions, not `#[cfg(test)]` — used from
+  `mate-core::toolset`'s own attachment tests too, the same way
+  `HttpShared::with_limits` is a plain public "for tests" constructor.
 - Both crates follow the workspace-wide rule: every `assert_eq!` gets a
   third-argument message stating the fact under test, not just the values.

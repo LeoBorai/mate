@@ -11,13 +11,14 @@ use mate_core::cost::ModelRate;
 use mate_core::provider_error::ProviderError;
 use mate_core::session::SessionManager;
 use mate_tool_http::HttpShared;
+use mate_tool_mcp::McpServers;
 use mate_tui::{InitialSession, SessionDefaults};
 
 use crate::config::{Config, api_token};
 use crate::error::MateError;
 use crate::plain::{
     DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE, build_backend, classify_verify_error,
-    resolve_workspace_roots,
+    mcp_server_specs, resolve_workspace_roots,
 };
 
 pub async fn run(cli: &crate::cli::Cli, config: &Config) -> Result<(), MateError> {
@@ -32,6 +33,7 @@ pub async fn run(cli: &crate::cli::Cli, config: &Config) -> Result<(), MateError
         .map_err(|err| classify_verify_error(ProviderError::classify(&err)))?;
 
     let roots = resolve_workspace_roots(cli)?;
+    let mcp = Arc::new(McpServers::connect(mcp_server_specs(config)).await);
     let defaults = SessionDefaults {
         model: config.model.clone(),
         backend_name: config.backend.label().to_string(),
@@ -40,6 +42,7 @@ pub async fn run(cli: &crate::cli::Cli, config: &Config) -> Result<(), MateError
         max_tokens: DEFAULT_MAX_TOKENS,
         max_turns: config.max_turns,
         http: config.http.clone(),
+        mcp_enabled: mcp.has_active_servers(),
         delegation: config.delegation.clone(),
         max_output_bytes: config.tools.max_output_bytes,
         agents_md_enabled: config.agents_md.enabled,
@@ -51,7 +54,7 @@ pub async fn run(cli: &crate::cli::Cli, config: &Config) -> Result<(), MateError
             .map_err(|err| MateError::Other(anyhow::anyhow!(err)))?,
     );
     let (mut manager, events_rx) =
-        SessionManager::new(Arc::new(backend), http, config.max_sessions);
+        SessionManager::new(Arc::new(backend), http, mcp, config.max_sessions);
     let provider = defaults.provider_label();
     let subagent_model = defaults.subagent_model_label();
 

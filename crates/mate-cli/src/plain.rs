@@ -24,6 +24,7 @@ use mate_core::streaming::{AgentEvent, AgentEventEnvelope};
 use mate_core::toolset::tool_descriptors;
 use mate_tool_api::{AgentId, ToolCtx};
 use mate_tool_http::HttpShared;
+use mate_tool_mcp::McpServers;
 use tokio::io::AsyncBufReadExt;
 use tokio_util::sync::CancellationToken;
 
@@ -52,6 +53,28 @@ pub(crate) fn build_backend(
     }
 }
 
+/// Maps this process's loaded `[[mcp.servers]]` config into the plain, `mate-core`-free spec
+/// type `mate_tool_mcp::McpServers::connect` actually takes (§8.1 note 1: `mate-tool-mcp` can
+/// never depend on `mate-core`, so this glue lives here — the same shape `mate-cli` already is
+/// the one place that builds `mate_tool_http::HttpShared` from `config.http`). `transport` is
+/// dropped here on purpose: by the time a `McpServerConfig` exists at all, `mate_core::config`'s
+/// deserialization has already rejected anything but `Stdio` — this crate's stdio-only
+/// `StdioTransport` is the only transport `mate-tool-mcp` has to spawn against.
+pub(crate) fn mcp_server_specs(config: &Config) -> Vec<mate_tool_mcp::ServerSpec> {
+    config
+        .mcp
+        .servers
+        .iter()
+        .map(|server| mate_tool_mcp::ServerSpec {
+            name: server.name.clone(),
+            command: server.command.clone(),
+            args: server.args.clone(),
+            env: server.env.clone(),
+            allow: server.allow.clone(),
+        })
+        .collect()
+}
+
 /// Whether `main` should route this invocation through the plain frontend: an explicit
 /// `--plain`/`--print`, or a prompt on a non-TTY stdout (`M5-3` — piping into another program
 /// shouldn't require remembering `--plain`). A bare `mate` with no prompt and no flag is left
@@ -77,6 +100,7 @@ pub async fn run(cli: &Cli, config: &Config) -> Result<(), MateError> {
         HttpShared::new(config.http.rate_limit_per_host_per_min)
             .map_err(|err| MateError::Other(anyhow::anyhow!(err)))?,
     );
+    let mcp = Arc::new(McpServers::connect(mcp_server_specs(config)).await);
     let skills = mate_tool_skills::discover_skills(&workspace_root);
     let skill_descriptors: Vec<SkillDescriptor> = skills
         .iter()
@@ -95,7 +119,12 @@ pub async fn run(cli: &Cli, config: &Config) -> Result<(), MateError> {
         PreambleRole::Root,
         &workspace_root,
         std::env::consts::OS,
-        &tool_descriptors(false, config.http.enabled, !skills.is_empty()),
+        &tool_descriptors(
+            false,
+            config.http.enabled,
+            !skills.is_empty(),
+            mcp.has_active_servers(),
+        ),
         &skill_descriptors,
         agents_md.as_ref(),
     );
@@ -128,7 +157,7 @@ pub async fn run(cli: &Cli, config: &Config) -> Result<(), MateError> {
         skills: Arc::from(skills),
         agents_md: agents_md.map(Arc::new),
     };
-    let agent = build_agent(&backend, &http, &spec, ctx);
+    let agent = build_agent(&backend, &http, Some(&mcp), &spec, ctx);
 
     // `M5-4`: Ctrl+C cancels the in-flight turn, which unwinds the loop below cleanly rather
     // than killing the process mid-write. Aborted once `run` returns so a normal exit doesn't

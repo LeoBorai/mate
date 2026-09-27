@@ -16,6 +16,7 @@ use std::sync::Arc;
 
 use mate_tool_api::ToolCtx;
 use mate_tool_http::HttpShared;
+use mate_tool_mcp::McpServers;
 use rig::agent::Agent;
 use rig::client::AgentClientExt;
 use rig::completion::Message;
@@ -64,13 +65,19 @@ impl BuiltAgent {
 /// [`TurnCapHook`] (`M4-4`). Logs an `info` line before and after each branch — the resolved
 /// model (post [`Backend::qualify_model`] on the HuggingFace path) is the detail most worth
 /// having in the log file when a build fails or routes somewhere unexpected.
+/// `mcp` is `Option<&Arc<McpServers>>` — `None` for every subagent call site
+/// (`crate::subagent::SubagentRunner::run`, which never holds an `Arc<McpServers>` to pass
+/// `Some` with), `Some(&mcp)` for every root call site (`mate-cli`'s two frontends,
+/// `crate::session::SessionManager::spawn`). See `crate::toolset::build_toolset`'s doc comment
+/// for why this is the mechanism behind the spec's "No MCP tools for subagents" requirement.
 pub fn build_agent(
     backend: &Backend,
     http: &Arc<HttpShared>,
+    mcp: Option<&Arc<McpServers>>,
     spec: &AgentSpec,
     ctx: ToolCtx,
 ) -> BuiltAgent {
-    let tools = build_toolset(ctx, &spec.http, http.clone());
+    let tools = build_toolset(ctx, &spec.http, http.clone(), mcp);
     match backend {
         Backend::HuggingFace { client, .. } => {
             let model = backend.qualify_model(&spec.model);

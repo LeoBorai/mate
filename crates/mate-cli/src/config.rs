@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use anyhow::Context;
 use figment::Figment;
 use figment::providers::{Env, Format, Serialized, Toml};
-use mate_core::config::{DelegationPolicy, HttpAccessPolicy, HttpPolicy};
+use mate_core::config::{DelegationPolicy, HttpAccessPolicy, HttpPolicy, McpConfig};
 use serde::{Deserialize, Serialize};
 
 use crate::cli::Cli;
@@ -59,6 +59,7 @@ pub struct Config {
     pub pricing: HashMap<String, PricingEntry>,
     pub http: HttpPolicy,
     pub agents_md: AgentsMdConfig,
+    pub mcp: McpConfig,
 }
 
 impl Default for Config {
@@ -90,6 +91,7 @@ impl Default for Config {
             ]),
             http: HttpPolicy::default(),
             agents_md: AgentsMdConfig::default(),
+            mcp: McpConfig::default(),
         }
     }
 }
@@ -193,6 +195,9 @@ pub fn load(cli: &Cli) -> anyhow::Result<Config> {
 
     let mut config: Config = fig.extract().context("failed to load config")?;
     apply_flags(&mut config, cli);
+    mate_core::config::validate_mcp_servers(&config.mcp.servers)
+        .map_err(|err| anyhow::anyhow!(err))
+        .context("invalid [[mcp.servers]] configuration")?;
     Ok(config)
 }
 
@@ -469,6 +474,77 @@ mod tests {
             let config = load(&cli(&[])).unwrap();
             assert_eq!(config.agents_md.max_bytes, 4096);
             assert!(config.agents_md.enabled, "unset fields keep their default");
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn mcp_servers_load_from_the_project_config_file() {
+        Jail::expect_with(|jail| {
+            jail.clear_env();
+            let home = jail.directory().display().to_string();
+            jail.set_env("HOME", home);
+            jail.create_file(
+                ".mate.toml",
+                r#"
+                [[mcp.servers]]
+                name = "docs"
+                command = "docs-mcp-server"
+                args = ["--stdio"]
+                allow = ["search"]
+                "#,
+            )?;
+
+            let config = load(&cli(&[])).unwrap();
+            assert_eq!(config.mcp.servers.len(), 1);
+            let server = &config.mcp.servers[0];
+            assert_eq!(server.name, "docs");
+            assert_eq!(server.command, "docs-mcp-server");
+            assert_eq!(server.args, vec!["--stdio".to_string()]);
+            assert_eq!(server.allow, vec!["search".to_string()]);
+            assert_eq!(
+                server.transport,
+                mate_core::config::McpTransport::Stdio,
+                "an unspecified transport must default to stdio"
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn duplicate_mcp_server_names_fail_config_loading() {
+        Jail::expect_with(|jail| {
+            jail.clear_env();
+            let home = jail.directory().display().to_string();
+            jail.set_env("HOME", home);
+            jail.create_file(
+                ".mate.toml",
+                r#"
+                [[mcp.servers]]
+                name = "dup"
+                command = "a"
+
+                [[mcp.servers]]
+                name = "dup"
+                command = "b"
+                "#,
+            )?;
+
+            let err = load(&cli(&[])).unwrap_err();
+            assert!(err.to_string().contains("mcp.servers") || format!("{err:#}").contains("dup"));
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn no_mcp_servers_configured_defaults_to_an_empty_list() {
+        Jail::expect_with(|jail| {
+            jail.clear_env();
+            let home = jail.directory().display().to_string();
+            jail.set_env("HOME", home);
+
+            let config = load(&cli(&[])).unwrap();
+            assert!(config.mcp.servers.is_empty());
             Ok(())
         });
     }

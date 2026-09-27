@@ -3,6 +3,7 @@
 //! `HttpPolicy` are deserialized straight out of TOML tables; `AgentSpec` and `SessionSpec`
 //! are assembled from a loaded `Config` plus per-invocation data (workspace root, title).
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -34,6 +35,58 @@ pub enum HttpAccessPolicy {
     Public,
     /// `--http-allow-localhost`: also permits loopback. Never the default.
     AllowLocalhost,
+}
+
+/// MCP (Model Context Protocol) server configuration (§8.3-shaped, `add-mcp-support`): zero or
+/// more named servers, each spawned over stdio and proxied through `mate-tool-mcp`'s single
+/// `mcp` tool. Empty by default — no server configured means no `mcp` tool attached at all
+/// (spec: "No servers configured").
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct McpConfig {
+    pub servers: Vec<McpServerConfig>,
+}
+
+/// One configured MCP server. `transport` only ever deserializes to [`McpTransport::Stdio`]
+/// today — any other value fails at config-load time (serde's own unknown-variant error),
+/// satisfying "reject any transport other than stdio" without a separate validation pass for
+/// that specific check. [`validate_mcp_servers`] covers what serde's enum matching can't:
+/// duplicate names across servers.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+#[derive(Default)]
+pub struct McpServerConfig {
+    pub name: String,
+    pub transport: McpTransport,
+    pub command: String,
+    pub args: Vec<String>,
+    pub env: HashMap<String, String>,
+    /// Tool names this server's calls may run unattended. Empty means every call to this
+    /// server is refused, though its proxy entry still attaches (spec: "Empty allow-list").
+    pub allow: Vec<String>,
+}
+
+/// This change supports stdio only (`proposal.md`'s non-goals: remote transports are a
+/// follow-on). A single-variant enum rather than a `bool`/`&str` so a future remote transport is
+/// an additive variant, not a breaking field-type change.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpTransport {
+    #[default]
+    Stdio,
+}
+
+/// Rejects a configuration with two servers sharing a name, before any server is spawned (spec:
+/// "Duplicate server name"). Pure and process-free so it's called from `mate-cli`'s config
+/// loader right after deserializing, ahead of ever touching `mate-tool-mcp`.
+pub fn validate_mcp_servers(servers: &[McpServerConfig]) -> Result<(), String> {
+    let mut seen = std::collections::HashSet::new();
+    for server in servers {
+        if !seen.insert(server.name.as_str()) {
+            return Err(format!("duplicate mcp server name: '{}'", server.name));
+        }
+    }
+    Ok(())
 }
 
 /// The subagent model absent any explicit override — the HuggingFace path's own default, used
@@ -103,4 +156,57 @@ pub struct SessionSpec {
     pub agent: AgentSpec,
     pub delegation: DelegationPolicy,
     pub max_turns: usize,
+}
+
+#[cfg(test)]
+mod mcp_config_tests {
+    use super::*;
+
+    fn server(name: &str) -> McpServerConfig {
+        McpServerConfig {
+            name: name.to_string(),
+            command: "true".to_string(),
+            ..McpServerConfig::default()
+        }
+    }
+
+    #[test]
+    fn transport_defaults_to_stdio() {
+        assert_eq!(McpServerConfig::default().transport, McpTransport::Stdio);
+    }
+
+    #[test]
+    fn empty_server_list_validates() {
+        assert!(validate_mcp_servers(&[]).is_ok());
+    }
+
+    #[test]
+    fn distinct_names_validate() {
+        assert!(validate_mcp_servers(&[server("a"), server("b")]).is_ok());
+    }
+
+    #[test]
+    fn duplicate_names_are_rejected_before_any_server_would_be_spawned() {
+        let err = validate_mcp_servers(&[server("dup"), server("dup")]).unwrap_err();
+        assert!(
+            err.contains("dup"),
+            "the error must name the offending duplicate server: {err}"
+        );
+    }
+
+    #[test]
+    fn an_unsupported_transport_is_rejected_at_deserialize_time() {
+        let toml = r#"
+            name = "x"
+            transport = "http"
+            command = "whatever"
+        "#;
+        let err = toml::from_str::<McpServerConfig>(toml).unwrap_err();
+        assert!(
+            err.to_string().to_lowercase().contains("http")
+                || err.to_string().to_lowercase().contains("variant"),
+            "an unsupported transport must fail to deserialize, not silently fall back to \
+             stdio: {err}"
+        );
+    }
 }

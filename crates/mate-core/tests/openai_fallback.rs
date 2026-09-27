@@ -52,6 +52,7 @@ async fn openai_compatible_fallback_round_trips_through_a_stub_server() {
     let agent = match build_agent(
         &backend,
         &support::http_shared(),
+        Some(&support::mcp_shared()),
         &stub_agent_spec(),
         support::tool_ctx(tmp.path().to_path_buf()),
     ) {
@@ -81,6 +82,7 @@ async fn build_agent_attaches_the_fs_toolset() {
     let agent = match build_agent(
         &backend,
         &support::http_shared(),
+        Some(&support::mcp_shared()),
         &stub_agent_spec(),
         support::tool_ctx(tmp.path().to_path_buf()),
     ) {

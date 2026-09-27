@@ -37,6 +37,18 @@ pub enum ToolActivity {
     /// `name` to flip that skill's row from an empty circle to a green dot, and string-matching
     /// a `Note`'s free text back into a name would be fragile.
     SkillLoaded { name: String },
+    /// `mate-tool-mcp`'s `mcp` proxy tool routed (or refused) a call. Neither `FileTouched` nor
+    /// `NetRequest` fits — no file path, and stdio isn't literally a network request — but it's
+    /// the same "external system was contacted" telemetry class. Emitted for every call attempt
+    /// that resolves to a configured server (i.e. past the "server not configured" refusal
+    /// stage), whether it ultimately succeeds or is refused/fails. No consumer yet — the panel
+    /// widget is a follow-on, per `add-mcp-support`'s proposal.
+    McpCall {
+        server: String,
+        tool: String,
+        ok: bool,
+        ms: u64,
+    },
 }
 
 /// `mate-tool-fs`'s `read_file`/`list_dir`/`find_files` (`M3`) emit `Read`; `write_file` emits

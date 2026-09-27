@@ -4674,6 +4674,7 @@ dependencies = [
  "mate-core",
  "mate-tool-api",
  "mate-tool-http",
+ "mate-tool-mcp",
  "mate-tool-skills",
  "mate-tui",
  "serde",
@@ -4699,6 +4700,7 @@ dependencies = [
  "mate-tool-api",
  "mate-tool-fs",
  "mate-tool-http",
+ "mate-tool-mcp",
  "mate-tool-skills",
  "reqwest 0.13.4",
  "rig",
@@ -4710,6 +4712,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tokio-util",
+ "toml 1.1.4+spec-1.1.0",
  "tracing",
  "ulid",
  "wiremock",
@@ -4789,6 +4792,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "mate-tool-mcp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "mate-tool-api",
+ "rig",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "mate-tool-skills"
 version = "0.1.0"
 dependencies = [
@@ -4817,6 +4835,7 @@ dependencies = [
  "mate-core",
  "mate-tool-api",
  "mate-tool-http",
+ "mate-tool-mcp",
  "mate-tool-skills",
  "ratatui",
  "ratatui-textarea",

@@ -26,8 +26,44 @@ flags → env (MATE_*) → ./.mate.toml (or --config) → ~/.config/mate/config.
   that same HuggingFace default string while also selecting `gemini`; that
   combination is assumed deliberate.
 - `DelegationPolicy`, `HttpPolicy`, `HttpAccessPolicy`, `AgentSpec`,
-  `SessionSpec` live in `mate-core/src/config.rs` — the shared, provider-facing
-  shape that both the CLI and (eventually) the session manager build from.
+  `SessionSpec`, `McpConfig`, `McpServerConfig`, `McpTransport` live in
+  `mate-core/src/config.rs` — the shared, provider-facing shape that both the
+  CLI and (eventually) the session manager build from.
+
+## MCP servers (`[[mcp.servers]]`)
+
+Zero or more named MCP servers, spawned over stdio and proxied through
+`mate-tool-mcp`'s single `mcp` tool (see `tools.md`'s MCP section for the
+tool itself). Example:
+
+```toml
+[[mcp.servers]]
+name = "docs"
+command = "docs-mcp-server"
+args = ["--stdio"]
+allow = ["search", "fetch_page"]
+
+[mcp.servers.env]
+DOCS_API_KEY = "..."
+```
+
+- `name` must be unique across every configured server —
+  `mate_core::config::validate_mcp_servers` rejects a duplicate at
+  config-load time, before any server is spawned.
+- `transport` defaults to (and today only accepts) `"stdio"` — any other
+  value fails to deserialize immediately, since `McpTransport` is a
+  single-variant enum. Remote transports (HTTP/SSE) are out of scope for
+  this capability; see `tools.md`.
+- `allow` is the tool names that server's calls may run **unattended** —
+  empty by default, meaning a configured server's proxy entry still lists
+  it, but every call naming it is refused until its tools are explicitly
+  allow-listed. There is no per-call approval prompt for MCP calls (unlike
+  `write_file`): an allow-listed tool runs the moment the model calls it,
+  same as `http_request`'s config-time (not per-call) trust model. Only add
+  a tool to `allow` once you trust it to run unattended.
+- No servers configured (the default) means no `mcp` tool is attached to
+  the agent's toolset at all — the same "absent unless enabled" shape
+  `http_request`'s `[http].enabled` already follows.
 
 ## `API_TOKEN` is env-only
 

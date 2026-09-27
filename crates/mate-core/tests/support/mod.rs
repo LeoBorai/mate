@@ -35,3 +35,10 @@ pub fn tool_ctx(root: PathBuf) -> ToolCtx {
 pub fn http_shared() -> Arc<HttpShared> {
     Arc::new(HttpShared::new(60).expect("offline construction never touches the network"))
 }
+
+/// The process-wide MCP registry `build_agent` now requires too (`add-mcp-support`) — an
+/// always-empty one, since these tool-round-trip/backend tests don't exercise MCP behavior at
+/// all, only that its absence still lets every other tool attach as before.
+pub fn mcp_shared() -> Arc<mate_tool_mcp::McpServers> {
+    Arc::new(mate_tool_mcp::McpServers::empty())
+}

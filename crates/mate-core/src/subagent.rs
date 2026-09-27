@@ -290,7 +290,9 @@ impl SubagentSpawner for SubagentRunner {
             PreambleRole::Subagent,
             &self.root,
             std::env::consts::OS,
-            &tool_descriptors(may_delegate, http.enabled, !self.skills.is_empty()),
+            // `mcp_enabled: false`, always — mirrors the `build_agent` call below: a subagent's
+            // preamble must not advertise a tool it will never actually have attached.
+            &tool_descriptors(may_delegate, http.enabled, !self.skills.is_empty(), false),
             &skill_descriptors,
             self.agents_md.as_deref(),
         );
@@ -314,7 +316,11 @@ impl SubagentSpawner for SubagentRunner {
 
         let deadline = Duration::from_secs(self.policy.wall_clock_timeout_secs);
         let report_max_bytes = self.policy.report_max_bytes;
-        let built = build_agent(&self.backend, &self.http_shared, &spec, ctx);
+        // `None`, always: a subagent never gets the `mcp` tool (spec: "No MCP tools for
+        // subagents"). `SubagentRunner` holds no `Arc<McpServers>` field at all, so this is the
+        // only value there is to pass — the same structural (not flag-based) guarantee
+        // `crate::toolset::build_toolset`'s doc comment describes.
+        let built = build_agent(&self.backend, &self.http_shared, None, &spec, ctx);
 
         let report = match built {
             BuiltAgent::HuggingFace(agent) => {

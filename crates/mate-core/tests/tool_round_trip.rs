@@ -50,6 +50,7 @@ async fn a_read_file_tool_call_round_trips_to_a_grounded_answer() {
             support::tool_ctx(root),
             &mate_core::config::HttpPolicy::default(),
             support::http_shared(),
+            None,
         ))
         .default_max_turns(4)
         .build();
@@ -86,6 +87,7 @@ async fn a_tool_failure_reaches_the_model_as_a_tool_result_and_the_model_recover
             support::tool_ctx(root),
             &mate_core::config::HttpPolicy::default(),
             support::http_shared(),
+            None,
         ))
         .default_max_turns(4)
         .build();
@@ -131,6 +133,7 @@ async fn a_model_that_always_calls_tools_terminates_at_the_turn_cap_instead_of_l
             support::tool_ctx(root),
             &mate_core::config::HttpPolicy::default(),
             support::http_shared(),
+            None,
         ))
         .default_max_turns(3)
         .build();
