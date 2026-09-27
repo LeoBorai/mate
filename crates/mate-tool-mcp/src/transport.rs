@@ -125,6 +125,10 @@ impl StdioTransport {
             .map_err(|err| ToolFailure::Other(anyhow::anyhow!(err)))?;
         if let Err(err) = self.write_line(&line).await {
             self.pending.lock().await.remove(&id);
+            // A failed write means the child's stdin is gone (process dead or dying) —
+            // flip `dead` here rather than waiting on the reader task's own EOF detection,
+            // which races with this call and may not have run yet.
+            self.dead.store(true, Ordering::SeqCst);
             return Err(err);
         }
 
