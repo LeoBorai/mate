@@ -2183,8 +2183,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn view_carries_the_pending_writes_diff_for_the_approval_modal() {
+    #[tokio::test]
+    async fn view_carries_the_pending_writes_diff_for_the_approval_modal() {
         let mut app = test_app(1);
         let session = app.tabs[0].id;
         app.on_session_event(SessionEvent {
