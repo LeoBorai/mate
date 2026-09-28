@@ -2,19 +2,27 @@
 //! through `mate_core::session::SessionManager` and `mate_tui::run`. `M8-5` opens one tab per
 //! `-C`/`--dir` path; `mate_tui::SessionDefaults` carries everything a tab opened later, via the
 //! TUI's own `Ctrl+T` spawn form, needs to build the same kind of session.
+//!
+//! With `API_TOKEN` set, sessions are started up front and handed to `mate_tui::run`. Without
+//! it, [`run`] hands `mate_tui::run_with_onboarding` a closure instead: the TUI walks the user
+//! through backend → model → token, then calls that closure — the very same [`start_sessions`]
+//! the token-set path calls itself — with the choices and the entered token.
 
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
 use mate_core::cost::ModelRate;
+use mate_core::model_catalog::CatalogBackend;
 use mate_core::provider_error::ProviderError;
 use mate_core::session::SessionManager;
 use mate_tool_http::HttpShared;
 use mate_tool_mcp::McpServers;
-use mate_tui::{InitialSession, SessionDefaults};
+use mate_tui::{
+    CompleteOnboarding, InitialSession, PendingOnboarding, SessionDefaults, StartedSessions,
+};
 
-use crate::config::{Config, api_token};
+use crate::config::{BackendKind, Config, api_token};
 use crate::error::MateError;
 use crate::plain::{
     DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE, build_backend, classify_verify_error,
@@ -22,11 +30,67 @@ use crate::plain::{
 };
 
 pub async fn run(cli: &crate::cli::Cli, config: &Config) -> Result<(), MateError> {
-    let token =
-        api_token().ok_or_else(|| MateError::Auth(anyhow::anyhow!("API_TOKEN is not set")))?;
+    match api_token() {
+        Some(token) => {
+            let started = start_sessions(cli, config, &token).await?;
+            mate_tui::run(
+                started.manager,
+                started.events,
+                started.sessions,
+                started.defaults,
+                started.pricing,
+            )
+            .await
+            .map_err(|err| MateError::Io(anyhow::anyhow!(err)))
+        }
+        None => run_with_onboarding(cli, config).await,
+    }
+}
 
+/// No `API_TOKEN` at startup: render the TUI anyway and let it collect a backend, model and
+/// token. Workspace roots are resolved up front so a bad `-C` path fails before the UI opens
+/// rather than after a token has been typed. Nothing else happens until onboarding completes —
+/// no backend is built and nothing touches the network.
+async fn run_with_onboarding(cli: &crate::cli::Cli, config: &Config) -> Result<(), MateError> {
+    resolve_workspace_roots(cli)?;
+
+    let cli = cli.clone();
+    let config = config.clone();
+    let complete: CompleteOnboarding = Box::new(move |backend, model, token| {
+        let cli = cli.clone();
+        let config = config.with_backend_and_model(backend_kind(backend), model);
+        Box::pin(async move {
+            start_sessions(&cli, &config, &token)
+                .await
+                .map_err(|err| err.to_string())
+        })
+    });
+
+    mate_tui::run_with_onboarding(PendingOnboarding { complete })
+        .await
+        .map_err(|err| MateError::Io(anyhow::anyhow!(err)))
+}
+
+/// The one place a catalog backend becomes the CLI's `BackendKind` (see
+/// `mate_core::model_catalog` for why they are distinct types).
+fn backend_kind(backend: CatalogBackend) -> BackendKind {
+    match backend {
+        CatalogBackend::Huggingface => BackendKind::Huggingface,
+        CatalogBackend::Gemini => BackendKind::Gemini,
+    }
+}
+
+/// Builds the backend, verifies `token` against it, and spawns one session per workspace root:
+/// everything the frontend needs before its first frame when a token is available. Shared by
+/// the token-set path (called directly, in the same order as always) and onboarding (called
+/// once the user has entered a token).
+async fn start_sessions(
+    cli: &crate::cli::Cli,
+    config: &Config,
+    token: &str,
+) -> Result<StartedSessions, MateError> {
     let backend =
-        build_backend(config, &token).map_err(|err| MateError::Provider(anyhow::anyhow!(err)))?;
+        build_backend(config, token).map_err(|err| MateError::Provider(anyhow::anyhow!(err)))?;
     backend
         .verify()
         .await
@@ -102,13 +166,36 @@ pub async fn run(cli: &crate::cli::Cli, config: &Config) -> Result<(), MateError
         })
         .collect();
 
-    mate_tui::run(manager, events_rx, sessions, defaults, pricing)
-        .await
-        .map_err(|err| MateError::Io(anyhow::anyhow!(err)))
+    Ok(StartedSessions {
+        manager,
+        events: events_rx,
+        sessions,
+        defaults,
+        pricing,
+    })
 }
 
 fn title_for(root: &Path) -> String {
     root.file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "mate".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_catalog_backend_maps_to_its_matching_backend_kind() {
+        assert_eq!(
+            backend_kind(CatalogBackend::Huggingface),
+            BackendKind::Huggingface,
+            "the Hugging Face catalog backend selects the Hugging Face path"
+        );
+        assert_eq!(
+            backend_kind(CatalogBackend::Gemini),
+            BackendKind::Gemini,
+            "the Gemini catalog backend selects the Gemini path"
+        );
+    }
 }

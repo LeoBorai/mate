@@ -10,6 +10,7 @@ pub mod backend;
 mod compact;
 pub mod config;
 pub mod cost;
+pub mod model_catalog;
 pub mod preamble;
 pub mod provider_error;
 pub mod session;

@@ -67,6 +67,14 @@ DOCS_API_KEY = "..."
 
 ## `API_TOKEN` is env-only
 
+With `API_TOKEN` unset, the TUI (never `--plain`/`--print`, which still fail fast) opens an
+onboarding flow instead of exiting: backend → model (from `mate_core::model_catalog`) → token.
+The entered token lives only in `mate-tui`'s `Onboarding` state and is moved into the completion
+closure `mate-cli`'s `tui.rs` supplies; it never touches `Config`, figment, or disk, and a
+relaunch asks again. `Config::with_backend_and_model` re-points the loaded config at the chosen
+backend/model (and takes no token, on purpose).
+
+
 Read via `config::api_token()`. It is **never** a `Config` field and never
 round-trips through a config file, even if a config file happens to set the
 key. Don't add it to `Config` — that reopens a credential leak this rule
