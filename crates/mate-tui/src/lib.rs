@@ -8,6 +8,7 @@
 mod app;
 mod highlight;
 mod input;
+mod onboarding;
 mod panel;
 mod panel_widgets;
 mod roster;
@@ -18,5 +19,6 @@ mod transcript;
 mod ui;
 mod wrap;
 
-pub use app::{InitialSession, TuiError, run};
+pub use app::{InitialSession, TuiError, run, run_with_onboarding};
+pub use onboarding::{CompleteOnboarding, PendingOnboarding, StartedSessions};
 pub use session_factory::{SessionDefaults, build_spec, build_tool_ctx};

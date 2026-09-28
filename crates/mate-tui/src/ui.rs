@@ -23,6 +23,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use crate::app::{ApprovalOption, SpawnField};
 use crate::highlight::PreviewCache;
 use crate::input::InputBox;
+use crate::onboarding::{Onboarding, Step};
 use crate::panel::{DocRow, NetRow, SkillRow};
 use crate::panel_widgets::{AgentStatusPanel, PanelFocus, PanelView};
 use crate::roster::SubagentRow;
@@ -590,6 +591,137 @@ fn render_spawn_form(f: &mut Frame<'_>, area: Rect, form: &SpawnFormView<'_>) {
         )));
     }
     f.render_widget(Paragraph::new(lines), inner);
+}
+
+/// The whole-screen first-run onboarding (backend → model → token): a blank background with
+/// one centered popup, drawn before any session exists. The model step shows a window of the
+/// catalog list scrolled to keep the highlighted row visible; the token step masks its input
+/// with `*`. Kept as plain lines over [`Onboarding`]'s own accessors — its state, not this
+/// rendering, is what's unit-tested.
+pub(crate) fn render_onboarding(f: &mut Frame<'_>, onboarding: &Onboarding) {
+    let area = f.area();
+    let width = area.width.saturating_sub(4).clamp(30, 68);
+    let height = area.height.saturating_sub(2).clamp(10, 20);
+    let popup = centered_rect(width, height, area);
+
+    f.render_widget(Clear, popup);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" welcome to mate — first-time setup ");
+    let inner = block.inner(popup);
+    f.render_widget(block, popup);
+
+    let highlight = Style::default().add_modifier(Modifier::REVERSED);
+    let dim = Style::default().fg(Color::DarkGray);
+    let step_label = match onboarding.step {
+        Step::Backend => "1/3 · choose a backend",
+        Step::Model => "2/3 · choose a model",
+        Step::Token => "3/3 · enter your API token",
+    };
+    let mut lines = vec![
+        Line::from(Span::styled(
+            step_label,
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::raw(""),
+    ];
+    let hint = match onboarding.step {
+        Step::Backend => "↑/↓ move · Enter select · Esc quit",
+        Step::Model => "↑/↓ move · Enter select · Esc back",
+        Step::Token if onboarding.verifying => "verifying token…",
+        Step::Token => "Enter verify · Ctrl+U clear · Esc back",
+    };
+    // header (2) + footer (blank + hint = 2), the rest is for list rows.
+    let list_rows = (inner.height as usize).saturating_sub(4).max(1);
+
+    match onboarding.step {
+        Step::Backend => {
+            for (i, backend) in mate_core::model_catalog::CatalogBackend::ALL
+                .iter()
+                .enumerate()
+            {
+                let selected = i == onboarding.backend_sel;
+                let marker = if selected { "› " } else { "  " };
+                let style = if selected {
+                    highlight
+                } else {
+                    Style::default()
+                };
+                lines.push(Line::from(Span::styled(
+                    format!("{marker}{}", backend.display_name()),
+                    style,
+                )));
+            }
+        }
+        Step::Model => {
+            let rows = onboarding.model_rows();
+            let start = window_start(rows.len(), onboarding.model_sel, list_rows);
+            for (i, model) in rows.iter().enumerate().skip(start).take(list_rows) {
+                let selected = i == onboarding.model_sel;
+                let marker = if selected { "› " } else { "  " };
+                let price = match model.pricing {
+                    Some(rate) => format!(
+                        "  ${:.2}/${:.2} per M",
+                        rate.input_per_million, rate.output_per_million
+                    ),
+                    None => String::new(),
+                };
+                let style = if selected {
+                    highlight
+                } else {
+                    Style::default()
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(format!("{marker}{}", model.display_name), style),
+                    Span::styled(price, dim),
+                ]));
+            }
+        }
+        Step::Token => {
+            lines.push(Line::from(format!(
+                "backend: {}",
+                onboarding.backend().display_name()
+            )));
+            lines.push(Line::from(format!(
+                "model:   {}",
+                onboarding.selected_model().map_or("?", |m| m.id)
+            )));
+            lines.push(Line::raw(""));
+            lines.push(Line::from(vec![
+                Span::raw("token:   "),
+                Span::styled("*".repeat(onboarding.token_len()), highlight),
+                Span::styled(" ", highlight),
+            ]));
+            lines.push(Line::from(Span::styled(
+                "kept in memory for this run only — never written to disk",
+                dim,
+            )));
+        }
+    }
+    if let Some(err) = &onboarding.error {
+        lines.push(Line::from(Span::styled(
+            err.clone(),
+            Style::default().fg(Color::Red),
+        )));
+    }
+    f.render_widget(Paragraph::new(lines), inner);
+
+    let hint_area = Rect {
+        x: inner.x,
+        y: inner.y + inner.height.saturating_sub(1),
+        width: inner.width,
+        height: 1.min(inner.height),
+    };
+    f.render_widget(Paragraph::new(Span::styled(hint, dim)), hint_area);
+}
+
+/// First visible row of a `rows`-tall window over `len` items that keeps `selected` roughly
+/// centered without scrolling past either end.
+fn window_start(len: usize, selected: usize, rows: usize) -> usize {
+    if len <= rows {
+        return 0;
+    }
+    selected.saturating_sub(rows / 2).min(len - rows)
 }
 
 fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {

@@ -24,3 +24,7 @@ test:
 # Checks licences and security advisories
 deny:
     cargo deny check
+
+# Regenerates the model catalog from the pinned models.dev commit (needs network, curl and tar)
+gen-model-catalog:
+    cargo run -p xtask-model-catalog

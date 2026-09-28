@@ -45,6 +45,39 @@ impl BackendKind {
     }
 }
 
+impl Config {
+    /// This config re-pointed at a backend and model chosen interactively during onboarding
+    /// (`tui.rs`), when no token existed at startup to build sessions from the loaded config.
+    ///
+    /// Everything else is kept as loaded, with two adjustments that follow from the backend
+    /// switch: `sub_provider` (a Hugging Face partner name, meaningless elsewhere) is dropped
+    /// for any other backend, and a subagent model still sitting on the *other* backend's
+    /// built-in default is swapped for this backend's — the same string-equality heuristic
+    /// `apply_flags` applies for `--backend`.
+    ///
+    /// Takes no token on purpose: the onboarding token never touches `Config`.
+    pub fn with_backend_and_model(&self, backend: BackendKind, model: String) -> Config {
+        let mut config = self.clone();
+        config.backend = backend;
+        config.model = model;
+        if backend != BackendKind::Huggingface {
+            config.sub_provider = None;
+        }
+        let subagent = config.delegation.subagent_model.as_deref();
+        match backend {
+            BackendKind::Gemini if subagent == Some(mate_core::config::DEFAULT_SUBAGENT_MODEL) => {
+                config.delegation.subagent_model = Some(GEMINI_DEFAULT_SUBAGENT_MODEL.to_string());
+            }
+            BackendKind::Huggingface if subagent == Some(GEMINI_DEFAULT_SUBAGENT_MODEL) => {
+                config.delegation.subagent_model =
+                    Some(mate_core::config::DEFAULT_SUBAGENT_MODEL.to_string());
+            }
+            _ => {}
+        }
+        config
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -547,6 +580,108 @@ mod tests {
             assert!(config.mcp.servers.is_empty());
             Ok(())
         });
+    }
+
+    #[test]
+    fn onboarding_retargets_backend_and_model_and_drops_a_huggingface_partner() {
+        let base = Config {
+            sub_provider: Some("together".to_string()),
+            ..Config::default()
+        };
+
+        let config =
+            base.with_backend_and_model(BackendKind::Gemini, "gemini-2.5-flash".to_string());
+
+        assert_eq!(
+            config.backend,
+            BackendKind::Gemini,
+            "the chosen backend replaces the loaded one"
+        );
+        assert_eq!(
+            config.model, "gemini-2.5-flash",
+            "the chosen model replaces the loaded one"
+        );
+        assert_eq!(
+            config.sub_provider, None,
+            "a Hugging Face partner is meaningless on Gemini"
+        );
+        assert_eq!(
+            config.delegation.subagent_model.as_deref(),
+            Some("gemini-3.5-flash-lite"),
+            "the Hugging Face subagent default is swapped for a model Gemini can serve"
+        );
+        assert_eq!(
+            config.max_sessions, base.max_sessions,
+            "unrelated settings are untouched"
+        );
+    }
+
+    #[test]
+    fn onboarding_back_to_huggingface_restores_its_subagent_default() {
+        let base = Config {
+            backend: BackendKind::Gemini,
+            delegation: DelegationPolicy {
+                subagent_model: Some(GEMINI_DEFAULT_SUBAGENT_MODEL.to_string()),
+                ..DelegationPolicy::default()
+            },
+            ..Config::default()
+        };
+
+        let config = base.with_backend_and_model(BackendKind::Huggingface, "org/model".to_string());
+
+        assert_eq!(
+            config.delegation.subagent_model.as_deref(),
+            Some(mate_core::config::DEFAULT_SUBAGENT_MODEL),
+            "a Gemini subagent default must not follow the user onto Hugging Face"
+        );
+    }
+
+    #[test]
+    fn onboarding_keeps_an_explicit_subagent_model() {
+        let base = Config {
+            delegation: DelegationPolicy {
+                subagent_model: Some("my/pinned-subagent".to_string()),
+                ..DelegationPolicy::default()
+            },
+            ..Config::default()
+        };
+
+        let config =
+            base.with_backend_and_model(BackendKind::Gemini, "gemini-2.5-flash".to_string());
+
+        assert_eq!(
+            config.delegation.subagent_model.as_deref(),
+            Some("my/pinned-subagent"),
+            "only a built-in default is swapped, never a deliberate choice"
+        );
+    }
+
+    #[test]
+    fn onboarding_never_routes_a_token_through_config() {
+        // The onboarding token is handed straight to the completion closure and never given to
+        // `with_backend_and_model` (whose signature has no place for one). This pins the other
+        // half: nothing token-shaped exists on `Config` for it to leak into, before or after a
+        // retarget, so serializing the config back out can never carry one.
+        fn keys(table: &toml::Table, out: &mut Vec<String>) {
+            for (key, value) in table {
+                out.push(key.to_lowercase());
+                if let Some(nested) = value.as_table() {
+                    keys(nested, out);
+                }
+            }
+        }
+        let config = Config::default().with_backend_and_model(BackendKind::Gemini, "m".to_string());
+
+        let serialized = toml::Table::try_from(&config).unwrap();
+        let mut all_keys = Vec::new();
+        keys(&serialized, &mut all_keys);
+
+        assert!(
+            all_keys
+                .iter()
+                .all(|key| !key.contains("token") || key == "max_tokens"),
+            "Config must not grow a token field: {all_keys:?}"
+        );
     }
 
     #[test]

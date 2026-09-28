@@ -50,6 +50,9 @@ use ulid::Ulid;
 
 use crate::highlight::{ApprovalPreviewCache, PreviewCache};
 use crate::input::InputBox;
+use crate::onboarding::{
+    Onboarding, Outcome as OnboardingOutcome, PendingOnboarding, StartedSessions,
+};
 use crate::panel::Panel;
 use crate::panel_widgets::{PanelFocus, PanelWidgetKind};
 use crate::roster::Roster;
@@ -1416,16 +1419,118 @@ pub async fn run(
     if sessions.is_empty() {
         return Ok(());
     }
-    let mut terminal = ratatui::try_init()?;
+    let mut terminal = init_terminal()?;
+    let app = App::new(manager, events, sessions, defaults, pricing);
+    drive(app, &mut terminal).await
+}
+
+/// Like [`run`], but for a process that has no `API_TOKEN` yet: renders the onboarding flow
+/// first (backend → model → token, see [`crate::onboarding`]) and only opens the tabbed view
+/// once `pending.complete` has verified the token and spawned the sessions. A failed attempt
+/// shows its error inline on the token step and can be retried without restarting; backing out
+/// of the first step (or `Ctrl+C`) exits cleanly with `Ok(())` and no sessions ever started.
+pub async fn run_with_onboarding(pending: PendingOnboarding) -> Result<(), TuiError> {
+    let mut terminal = init_terminal()?;
+    let started = match run_onboarding(&mut terminal, &pending).await {
+        Ok(Some(started)) if !started.sessions.is_empty() => started,
+        Ok(_) => {
+            restore_terminal();
+            return Ok(());
+        }
+        Err(err) => {
+            restore_terminal();
+            return Err(err);
+        }
+    };
+    let app = App::new(
+        started.manager,
+        started.events,
+        started.sessions,
+        started.defaults,
+        started.pricing,
+    );
+    drive(app, &mut terminal).await
+}
+
+fn init_terminal() -> Result<ratatui::DefaultTerminal, TuiError> {
+    let terminal = ratatui::try_init()?;
     crossterm::execute!(io::stdout(), EnableMouseCapture)?;
-    let mut app = App::new(manager, events, sessions, defaults, pricing);
-    let result = run_loop(&mut app, &mut terminal).await;
+    Ok(terminal)
+}
+
+fn restore_terminal() {
     let _ = crossterm::execute!(io::stdout(), DisableMouseCapture);
     ratatui::restore();
+}
+
+async fn drive(mut app: App, terminal: &mut ratatui::DefaultTerminal) -> Result<(), TuiError> {
+    let result = run_loop(&mut app, terminal).await;
+    restore_terminal();
     for tab in &app.tabs {
         let _ = tab.handle.send(SessionCmd::Shutdown).await;
     }
     result
+}
+
+/// Drives the onboarding modal until it yields started sessions (`Some`) or the user backs out
+/// (`None`). While `pending.complete` is verifying the token the modal keeps redrawing and
+/// still honors `Ctrl+C`, which drops the in-flight attempt and quits.
+async fn run_onboarding(
+    terminal: &mut ratatui::DefaultTerminal,
+    pending: &PendingOnboarding,
+) -> Result<Option<StartedSessions>, TuiError> {
+    let mut term_events = EventStream::new();
+    let mut onboarding = Onboarding::new();
+    loop {
+        terminal.draw(|f| ui::render_onboarding(f, &onboarding))?;
+
+        let Some(Ok(event)) = term_events.next().await else {
+            return Ok(None);
+        };
+        let Event::Key(key) = event else {
+            continue;
+        };
+        if key.kind != KeyEventKind::Press {
+            continue;
+        }
+        match onboarding.on_key(key) {
+            OnboardingOutcome::Continue => {}
+            OnboardingOutcome::Cancel => return Ok(None),
+            OnboardingOutcome::Submit => {
+                let Some(submission) = onboarding.begin_submit() else {
+                    continue;
+                };
+                terminal.draw(|f| ui::render_onboarding(f, &onboarding))?;
+
+                let attempt = (pending.complete)(
+                    submission.backend,
+                    submission.model.id.to_string(),
+                    submission.token,
+                );
+                tokio::pin!(attempt);
+                let result = loop {
+                    tokio::select! {
+                        result = &mut attempt => break Some(result),
+                        maybe_event = term_events.next() => match maybe_event {
+                            Some(Ok(Event::Key(key))) if key.kind == KeyEventKind::Press => {
+                                if onboarding.on_key(key) == OnboardingOutcome::Cancel {
+                                    break None;
+                                }
+                            }
+                            Some(Ok(_)) => {}
+                            Some(Err(_)) | None => break None,
+                        },
+                    }
+                };
+                let Some(result) = result else {
+                    return Ok(None);
+                };
+                if let Some(started) = onboarding.finish(result) {
+                    return Ok(Some(started));
+                }
+            }
+        }
+    }
 }
 
 async fn run_loop(app: &mut App, terminal: &mut ratatui::DefaultTerminal) -> Result<(), TuiError> {
@@ -1480,6 +1585,7 @@ mod tests {
     use mate_tool_mcp::McpServers;
     use tokio_util::sync::CancellationToken;
 
+    use crate::onboarding::Step;
     use crate::roster::SubagentStatus;
 
     use super::*;
@@ -2327,5 +2433,206 @@ mod tests {
         assert!(!text.contains("http_request"));
         assert!(!text.contains("spawn_agent"));
         assert!(text.contains("read_file"));
+    }
+
+    /// The offline equivalent of what `mate-cli`'s completion closure returns: `n` real (but
+    /// network-free) sessions plus the manager/receiver/defaults/pricing that go with them.
+    fn started_sessions(n: usize, pricing: HashMap<String, ModelRate>) -> StartedSessions {
+        let backend = Arc::new(Backend::huggingface("dummy-key", None, None).unwrap());
+        let http = Arc::new(HttpShared::new(60).unwrap());
+        let mcp = Arc::new(McpServers::empty());
+        let (mut manager, events) = SessionManager::new(backend, http, mcp, 8);
+        let sessions = (0..n)
+            .map(|i| {
+                let handle = manager.spawn(&spec(&format!("s{i}")), ctx()).unwrap();
+                InitialSession {
+                    session_id: handle.id,
+                    handle,
+                    title: format!("s{i}"),
+                    model: "org/model".to_string(),
+                    provider: "huggingface".to_string(),
+                    root: PathBuf::from("."),
+                    subagent_model: None,
+                    http_enabled: true,
+                    may_delegate: false,
+                    skills: Vec::new(),
+                    agents_md: None,
+                }
+            })
+            .collect();
+        StartedSessions {
+            manager,
+            events,
+            sessions,
+            defaults: defaults(),
+            pricing,
+        }
+    }
+
+    fn press(onboarding: &mut Onboarding, code: KeyCode) -> OnboardingOutcome {
+        onboarding.on_key(KeyEvent::new(code, KeyModifiers::NONE))
+    }
+
+    /// Drives onboarding to a submitted attempt: Gemini, its second model, the token
+    /// `"secret"`.
+    fn submitted_onboarding() -> Onboarding {
+        let mut onboarding = Onboarding::new();
+        press(&mut onboarding, KeyCode::Down);
+        press(&mut onboarding, KeyCode::Enter);
+        press(&mut onboarding, KeyCode::Down);
+        press(&mut onboarding, KeyCode::Enter);
+        for c in "secret".chars() {
+            press(&mut onboarding, KeyCode::Char(c));
+        }
+        assert_eq!(
+            press(&mut onboarding, KeyCode::Enter),
+            OnboardingOutcome::Submit,
+            "setup: Enter on a non-empty token submits"
+        );
+        onboarding
+    }
+
+    #[tokio::test]
+    async fn a_failed_completion_shows_its_error_and_keeps_the_backend_model_and_token() {
+        let pending = PendingOnboarding {
+            complete: Box::new(|_, _, _| {
+                Box::pin(async { Err("authentication failed".to_string()) })
+            }),
+        };
+        let mut onboarding = submitted_onboarding();
+        let (backend_sel, model_sel) = (onboarding.backend_sel, onboarding.model_sel);
+        let submission = onboarding.begin_submit().expect("a model is selected");
+
+        let result = (pending.complete)(
+            submission.backend,
+            submission.model.id.to_string(),
+            submission.token,
+        )
+        .await;
+        let started = onboarding.finish(result);
+
+        assert!(started.is_none(), "an Err completion starts no sessions");
+        assert_eq!(
+            onboarding.step,
+            Step::Token,
+            "focus returns to the token step"
+        );
+        assert_eq!(
+            onboarding.error.as_deref(),
+            Some("authentication failed"),
+            "the closure's message is shown inline"
+        );
+        assert!(!onboarding.verifying, "the attempt is no longer in flight");
+        assert_eq!(
+            onboarding.backend_sel, backend_sel,
+            "the backend choice survives the failure"
+        );
+        assert_eq!(
+            onboarding.model_sel, model_sel,
+            "the model choice survives the failure"
+        );
+        assert_eq!(
+            onboarding.token_len(),
+            "secret".len(),
+            "the token is kept for a quick fix"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_retry_after_a_failure_can_still_succeed() {
+        let mut onboarding = submitted_onboarding();
+        onboarding.begin_submit();
+        onboarding.finish(Err("network down".to_string()));
+
+        assert_eq!(
+            press(&mut onboarding, KeyCode::Enter),
+            OnboardingOutcome::Submit,
+            "Enter on the token step resubmits after a failure"
+        );
+        let submission = onboarding
+            .begin_submit()
+            .expect("a model is still selected");
+
+        assert_eq!(
+            submission.token, "secret",
+            "the retry carries the same token"
+        );
+        assert!(
+            onboarding.error.is_none(),
+            "the old error is cleared for the new attempt"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_successful_completion_opens_one_tab_per_root() {
+        let roots = 2;
+        let pending = PendingOnboarding {
+            complete: Box::new(move |_, _, _| {
+                Box::pin(async move { Ok(started_sessions(roots, HashMap::new())) })
+            }),
+        };
+        let mut onboarding = submitted_onboarding();
+        let submission = onboarding.begin_submit().expect("a model is selected");
+
+        let result = (pending.complete)(
+            submission.backend,
+            submission.model.id.to_string(),
+            submission.token,
+        )
+        .await;
+        let started = onboarding
+            .finish(result)
+            .expect("an Ok completion yields sessions");
+        let app = App::new(
+            started.manager,
+            started.events,
+            started.sessions,
+            started.defaults,
+            started.pricing,
+        );
+
+        assert_eq!(
+            app.tabs.len(),
+            roots,
+            "one tab per workspace root passed in"
+        );
+        assert!(!onboarding.verifying, "the attempt is finished");
+    }
+
+    #[tokio::test]
+    async fn the_chosen_models_catalog_price_fills_in_only_when_config_has_none() {
+        let mut onboarding = submitted_onboarding();
+        let model = onboarding.selected_model().expect("a model is selected");
+        let catalog_rate = model
+            .pricing
+            .expect("the second Gemini model is priced upstream");
+
+        onboarding.begin_submit();
+        let started = onboarding
+            .finish(Ok(started_sessions(1, HashMap::new())))
+            .expect("Ok yields sessions");
+        assert_eq!(
+            started.pricing.get(model.id),
+            Some(&catalog_rate),
+            "with no [pricing] entry the catalog rate is used for cost tracking"
+        );
+
+        let config_rate = ModelRate {
+            input_per_million: 123.0,
+            output_per_million: 456.0,
+        };
+        let mut onboarding = submitted_onboarding();
+        onboarding.begin_submit();
+        let started = onboarding
+            .finish(Ok(started_sessions(
+                1,
+                HashMap::from([(model.id.to_string(), config_rate)]),
+            )))
+            .expect("Ok yields sessions");
+        assert_eq!(
+            started.pricing.get(model.id),
+            Some(&config_rate),
+            "an explicit [pricing] entry always wins over the catalog"
+        );
     }
 }
