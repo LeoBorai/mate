@@ -1,0 +1,8 @@
+[build]
+target = "index.html"
+dist = "dist"
+
+# Pinned so CI and release builds generate identical CSS; `input.css` uses
+# Tailwind v3 directives.
+[tools]
+tailwindcss = "3.4.17"

@@ -24,6 +24,10 @@ pub enum MateError {
     #[error("provider error: {0}")]
     Provider(#[source] anyhow::Error),
 
+    /// `mate specviz` couldn't open its root, bind its port, or keep serving.
+    #[error("specviz: {0}")]
+    Specviz(#[source] mate_specviz_server::ViewerError),
+
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }
@@ -37,6 +41,7 @@ impl MateError {
             MateError::Io(_) => 3,
             MateError::Auth(_) => 4,
             MateError::Provider(_) => 5,
+            MateError::Specviz(_) => 6,
             MateError::Other(_) => 1,
         }
     }
@@ -53,6 +58,8 @@ mod tests {
             MateError::Io(anyhow::anyhow!("x")).exit_code(),
             MateError::Auth(anyhow::anyhow!("x")).exit_code(),
             MateError::Provider(anyhow::anyhow!("x")).exit_code(),
+            MateError::Specviz(mate_specviz_server::ViewerError::Serve(std::io::Error::other("x")))
+                .exit_code(),
             MateError::Other(anyhow::anyhow!("x")).exit_code(),
         ];
         assert!(codes.iter().all(|c| *c != 0));

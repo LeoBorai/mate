@@ -17,6 +17,8 @@ mate/
     ├── mate-tool-http/         # http_request — network access, guarded
     ├── mate-tool-mcp/          # mcp — MCP (Model Context Protocol) client, stdio transport
     ├── mate-tool-agent/        # spawn_agent — delegation within a session
+    ├── mate-specviz-server/    # spec viewer library: axum server, embedded UI (`mate specviz`, `/specviz`)
+    ├── mate-specviz-client/    # spec viewer UI: Leptos CSR, wasm32 only (empty crate on the host)
     ├── mate-tui/               # Ratatui frontend: tabs, side panel, transcript, first-run onboarding
     └── xtask-model-catalog/    # dev tool: regenerates mate-core's model catalog (`just gen-model-catalog`)
 ```
@@ -25,11 +27,16 @@ mate/
 
 ```
 cli ──► tui ──► core ──► rig
-                  ├────► mate-tool-fs    ──┐
-                  ├────► mate-tool-http  ──┤
-                  ├────► mate-tool-mcp   ──┤
-                  └────► mate-tool-agent ──┴──► mate-tool-api ──► rig (Tool trait only)
+ │       │        ├────► mate-tool-fs    ──┐
+ │       │        ├────► mate-tool-http  ──┤
+ │       │        ├────► mate-tool-mcp   ──┤
+ │       │        └────► mate-tool-agent ──┴──► mate-tool-api ──► rig (Tool trait only)
+ │       │
+ └───────┴──► mate-specviz-server ··· embeds ··· mate-specviz-client/dist (Trunk build output)
 ```
+
+`mate-specviz-server` depends on nothing else in the workspace; `mate-specviz-client`
+is not a Cargo dependency of anything — its build output is embedded as bytes.
 
 `mate-tool-api` must never depend on `mate-core` — that would invert the graph.
 Capabilities `mate-core` needs to hand down into a tool crate (approvals,
@@ -54,6 +61,8 @@ edition 2024, workspace resolver `3`.
 | `mate-tool-mcp` | `mcp` (`rig::tool::PortableTool` impl, `proxy.rs`'s `McpProxy`) is in place: one tool for every configured MCP server combined (`NAME = "mcp"`, dispatching by `{server, tool, arguments}` — see `tools.md` for why this isn't one tool per server), stdio transport only (`transport.rs`'s hand-rolled JSON-RPC-over-stdio client — no third-party MCP crate dependency), a three-stage refusal order (server → advertised tool → allow-listed tool) each with its own `ToolFailure` shape, and crash isolation via the transport's background reader task detecting the child process's stdout EOF. `servers.rs`'s `McpServers` is the process-wide registry (parallel to `HttpShared`), built once by `mate-cli` via `McpServers::connect` and shared as an `Arc`. |
 | `mate-core` model catalog | `model_catalog.rs` holds `CatalogBackend`/`ModelEntry` and lookups over `model_catalog/generated.rs`, a committed `const CATALOG` emitted by `xtask-model-catalog` from a pinned `anomalyco/models.dev` commit — never edited by hand, never fetched at build time. |
 | `mate-tui` | `M7`: terminal lifecycle (`app.rs::run`, via `ratatui::try_init`/`restore`), the `select!` event loop, transcript model with capped scrollback (`transcript.rs`), a per-entry wrap cache (`wrap.rs`), and the `ratatui-textarea`-backed input box with `Enter`/`Alt+Enter`/history routing (`input.rs`). `M8`: a tab bar (`ui.rs`'s `tab_bar_segments`, windowed and unit-tested against plain strings rather than `TestBackend` grids), per-tab view state (`SessionTab` in `app.rs` — transcript/wrap/input/scroll/streaming all moved off `App` onto one struct per tab), `Ctrl+T`'s spawn form plus `session_factory.rs` (the `SessionSpec`/`ToolCtx` assembly `mate-cli` also uses for the first tab(s)), `Ctrl+W` close with a streaming confirm (`SessionManager::close`, `mate-core`), unread/needs-attention markers plus `Ctrl+G` (`M8-4`), and one tab per `-C` path at startup (`M8-5`). `M12`: the agent status panel — `Ctrl+B` toggle, `Ctrl+P`/`Tab`/arrows navigation, five widgets (model, context+cost, subagent roster, network log, documents log) with a vertical-budget allocator that collapses documents before network before subagents. See `panel.md`. `M13`: the approval modal — a three-option menu (`Allow`/`Disallow`/`Always Allow`, `M13-6`), `↑`/`↓` moves the highlight and `Enter` confirms it, `Esc` is a shortcut straight to `Disallow`; `Always Allow` also remembers the request's target's parent directory for the rest of the session (`M13-5`); a queued request takes priority over every other key while open. Uses `ratatui-textarea`, not `tui-textarea` — that crate's `Widget` impl targets `ratatui` 0.29 and can't render into this workspace's `ratatui` 0.30. |
+| `mate-specviz-server` | `viewer.rs`'s `bind`/`url_of`/`run`/`spawn` + `Viewer` (drop-to-stop), `ViewerError`; sources (`specs/`, `openspec/`) in `infra/sandbox.rs`, OpenSpec parsing in `domain/openspec.rs`, OpenSpec-aware rendering in `infra/markdown.rs`. `mate-cli`'s `specviz.rs` runs it in the foreground; `mate-tui`'s `specviz.rs` (`Viewers`) runs one per root in the background. See `specviz.md`. |
+| `mate-specviz-client` | Leptos CSR UI: sectioned sidebar (Specs/Capabilities/Changes/Archive, progress and requirement badges), rendered spec pane, SSE live reload. wasm32-only. |
 
 `mate-core`'s subagent runtime (`subagent.rs`'s `SubagentRunner`, `M9`) and
 `mate-tool-agent`'s `spawn_agent` tool are landed — depth/concurrency/
@@ -65,7 +74,8 @@ and the `ToolActivity`/`ActivitySink` telemetry path (`M11`) are also landed
 
 For what each of those pieces actually does, see the other docs in this
 directory: `config.md`, `logging.md`, `error-handling.md`, `providers.md`,
-`streaming.md`, `tools.md`, `delegation.md`, `panel.md`, `testing.md`.
+`streaming.md`, `tools.md`, `delegation.md`, `panel.md`, `testing.md`,
+`specviz.md`.
 
 ## Existing infra — don't duplicate
 

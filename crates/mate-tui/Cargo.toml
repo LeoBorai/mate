@@ -9,6 +9,7 @@ dunce = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
 mate-core = { workspace = true }
+mate-specviz-server = { workspace = true }
 mate-tool-api = { workspace = true }
 mate-tool-skills = { workspace = true }
 ratatui = { workspace = true }

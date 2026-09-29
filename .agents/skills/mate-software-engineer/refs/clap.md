@@ -1,9 +1,14 @@
 # clap practices in `mate-cli`
 
 Read this before touching `crates/mate-cli/src/cli.rs` or adding a new flag.
-The whole CLI surface is one `#[derive(Parser)]` struct — there is no
-subcommand tree, and nothing here should introduce one without a real reason
-(`mate` is "one binary, a handful of flags," not a multi-command CLI).
+The whole CLI surface is one `#[derive(Parser)]` struct plus exactly one
+subcommand, `mate specviz` (`Command::Specviz`), which runs the spec viewer
+instead of an agent. Don't grow that into a subcommand tree without a real
+reason (`mate` is "one binary, a handful of flags," not a multi-command
+CLI). `args_conflicts_with_subcommands` keeps agent flags from being
+silently ignored next to `specviz`, and because `prompt` is an optional
+positional, the bare word `specviz` selects the subcommand while any other
+prompt (including a quoted one starting with "specviz") stays a prompt.
 
 ## One `Cli` struct, derive only
 

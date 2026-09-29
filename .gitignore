@@ -3,3 +3,4 @@
 
 .DS_Store
 plan.md
+/crates/mate-specviz-client/dist

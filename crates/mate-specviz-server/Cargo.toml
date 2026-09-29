@@ -1,0 +1,27 @@
+[package]
+name = "mate-specviz-server"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ammonia = { workspace = true }
+async-trait = { workspace = true }
+axum = { workspace = true }
+futures = { workspace = true }
+mime_guess = { workspace = true }
+notify = { workspace = true }
+pulldown-cmark = { workspace = true }
+rust-embed = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+syntect = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["net"] }
+tokio-stream = { workspace = true, features = ["sync"] }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+reqwest = { workspace = true, features = ["stream"] }
+tempfile = { workspace = true }
+tower = { workspace = true }

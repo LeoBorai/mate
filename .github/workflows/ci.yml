@@ -33,3 +33,20 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@nextest
       - run: cargo nextest run --workspace
+
+  specviz-client:
+    name: specviz client (wasm32)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: trunk@0.21
+      - name: trunk build --release
+        working-directory: crates/mate-specviz-client
+        run: trunk build --release
+      - run: cargo clippy -p mate-specviz-client --target wasm32-unknown-unknown -- -D warnings

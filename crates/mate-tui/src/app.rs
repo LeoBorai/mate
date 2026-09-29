@@ -58,6 +58,7 @@ use crate::panel_widgets::{PanelFocus, PanelWidgetKind};
 use crate::roster::Roster;
 use crate::session_factory::{self, SessionDefaults};
 use crate::slash::SlashCommand;
+use crate::specviz::{self, ViewerExit, Viewers};
 use crate::transcript::Transcript;
 use crate::ui::{self, AppView};
 use crate::wrap::WrapCache;
@@ -362,6 +363,9 @@ pub struct App {
     dirty: bool,
     should_quit: bool,
     spawn_form: Option<SpawnForm>,
+    /// `/specviz`'s background viewers, one per workspace root — dropped (and so stopped)
+    /// with `App` on quit.
+    viewers: Viewers,
 }
 
 impl App {
@@ -402,6 +406,7 @@ impl App {
             dirty: true,
             should_quit: false,
             spawn_form: None,
+            viewers: Viewers::new(),
         }
     }
 
@@ -1028,6 +1033,14 @@ impl App {
         }
     }
 
+    /// Same as [`Self::push_system`], rendered as an error.
+    fn push_system_error(&mut self, text: impl Into<String>) {
+        let tab = &mut self.tabs[self.active];
+        if let Some(evicted) = tab.transcript.push_error(text.into()) {
+            tab.wrap.invalidate(evicted);
+        }
+    }
+
     /// `/` command dispatch (`M13-3`), parsed by [`crate::slash::parse`] before this is ever
     /// called — every arm here either performs a local action or writes one `push_system` line,
     /// and none of them can reach `SessionCmd::Prompt`.
@@ -1043,9 +1056,36 @@ impl App {
             SlashCommand::Http(arg) => self.show_or_set_http(arg),
             SlashCommand::Clear => self.clear_active_transcript(),
             SlashCommand::Tokens => self.show_tokens(),
+            SlashCommand::Specviz => self.start_specviz().await,
             SlashCommand::Quit => self.should_quit = true,
             SlashCommand::Unknown(name) => self.push_system(format!("unknown command: /{name}")),
         }
+    }
+
+    /// `/specviz`: serves the active tab's workspace root in the browser, reusing the viewer
+    /// already running for that root if there is one. Only the bind is awaited here — the
+    /// index walk happens in the background — so the event loop never stalls. Never opens a
+    /// browser; the URL is the whole output.
+    async fn start_specviz(&mut self) {
+        let tab = &self.tabs[self.active];
+        let (root, id) = (tab.root.clone(), tab.id);
+        match self.viewers.ensure(&root, id).await {
+            Ok((root, url)) => self.push_system(specviz::serving_line(&root, &url)),
+            Err(err) => self.push_system_error(format!("specviz: {err}")),
+        }
+    }
+
+    /// A background viewer stopped with an error: forget it (so the next `/specviz` for that
+    /// root starts fresh) and tell the tab that started it, if it's still open.
+    fn on_viewer_exit(&mut self, exit: ViewerExit) {
+        self.viewers.forget(&exit);
+        if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == exit.tab) {
+            let text = format!("specviz ({}) stopped: {}", exit.root.display(), exit.error);
+            if let Some(evicted) = tab.transcript.push_error(text) {
+                tab.wrap.invalidate(evicted);
+            }
+        }
+        self.dirty = true;
     }
 
     /// `/new [dir]` (`M13-3`): the non-modal equivalent of `Ctrl+T` + Enter — same
@@ -1562,6 +1602,7 @@ async fn run_loop(app: &mut App, terminal: &mut ratatui::DefaultTerminal) -> Res
                     None => break,
                 }
             }
+            Some(exit) = app.viewers.exits.recv() => app.on_viewer_exit(exit),
             _ = tick.tick() => {
                 if app.dirty {
                     let mut view = app.view();
@@ -2358,6 +2399,136 @@ mod tests {
             app.tabs[0].approval_selection, 0,
             "and must leave the highlighted option untouched too"
         );
+    }
+
+    // --- `/specviz` --------------------------------------------------------------------------
+
+    fn last_entry(app: &App, tab: usize) -> &crate::transcript::Entry {
+        app.tabs[tab].transcript.iter().last().unwrap()
+    }
+
+    /// The URL a `/specviz` system line ends with.
+    fn specviz_url(app: &App, tab: usize) -> String {
+        let crate::transcript::Entry::System { text, .. } = last_entry(app, tab) else {
+            panic!("expected a system line, got {:?}", last_entry(app, tab));
+        };
+        text.rsplit(' ').next().unwrap().to_owned()
+    }
+
+    #[tokio::test]
+    async fn specviz_prints_a_loopback_url_and_never_starts_a_turn() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = test_app(1);
+        app.tabs[0].root = tmp.path().to_path_buf();
+
+        submit(&mut app, "/specviz").await;
+
+        assert!(!app.tabs[0].running_turn, "/specviz is local, never a prompt");
+        let url = specviz_url(&app, 0);
+        assert!(
+            url.starts_with("http://127.0.0.1:"),
+            "the line ends with the loopback URL: {url}"
+        );
+        let crate::transcript::Entry::System { text, .. } = last_entry(&app, 0) else {
+            unreachable!()
+        };
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        assert!(
+            text.contains(&root.display().to_string()),
+            "the line names the served root: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_repeat_specviz_reuses_the_running_viewer() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = test_app(1);
+        app.tabs[0].root = tmp.path().to_path_buf();
+
+        submit(&mut app, "/specviz").await;
+        let first = specviz_url(&app, 0);
+        submit(&mut app, "/specviz").await;
+        let second = specviz_url(&app, 0);
+
+        assert_eq!(first, second, "the same root keeps its one viewer");
+    }
+
+    #[tokio::test]
+    async fn two_roots_get_two_viewers() {
+        let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let mut app = test_app(2);
+        app.tabs[0].root = a.path().to_path_buf();
+        app.tabs[1].root = b.path().to_path_buf();
+
+        submit(&mut app, "/specviz").await;
+        app.active = 1;
+        submit(&mut app, "/specviz").await;
+
+        assert_ne!(
+            specviz_url(&app, 0),
+            specviz_url(&app, 1),
+            "each root is served by its own viewer on its own port"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_missing_root_reports_an_error_line() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = test_app(1);
+        app.tabs[0].root = tmp.path().join("gone");
+
+        submit(&mut app, "/specviz").await;
+
+        assert!(
+            matches!(
+                last_entry(&app, 0),
+                crate::transcript::Entry::SystemError { text, .. } if text.starts_with("specviz:")
+            ),
+            "a startup failure is an error line, not a crash"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_viewer_is_reported_and_can_be_restarted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = test_app(1);
+        app.tabs[0].root = tmp.path().to_path_buf();
+        submit(&mut app, "/specviz").await;
+        let url = specviz_url(&app, 0);
+
+        app.viewers
+            .exit_sender()
+            .send(ViewerExit {
+                root: dunce::canonicalize(tmp.path()).unwrap(),
+                url: url.clone(),
+                tab: app.tabs[0].id,
+                error: "boom".to_string(),
+            })
+            .unwrap();
+        let exit = app.viewers.exits.recv().await.unwrap();
+        app.on_viewer_exit(exit);
+
+        assert!(
+            matches!(
+                last_entry(&app, 0),
+                crate::transcript::Entry::SystemError { text, .. } if text.contains("boom")
+            ),
+            "the issuing tab hears why its viewer stopped"
+        );
+
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        assert!(
+            !app.viewers.is_running(&root),
+            "the failed viewer is forgotten"
+        );
+
+        submit(&mut app, "/specviz").await;
+        let restarted = specviz_url(&app, 0);
+        assert!(
+            restarted.starts_with("http://127.0.0.1:"),
+            "a later /specviz starts a fresh viewer: {restarted}"
+        );
+        assert!(app.viewers.is_running(&root), "and tracks it again");
     }
 
     // --- `M13-3`: slash commands -------------------------------------------------------------
