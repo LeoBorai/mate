@@ -3,7 +3,8 @@
 //! status bar showing that tab's provider, model, tokens, and cost, and a toggleable agent
 //! status panel (`Ctrl+B`, `M12`) — model, context/cost, subagent roster, network log, and
 //! documents log, with its own vertical-budget allocation and `Ctrl+P` row-level navigation
-//! (§9). `Ctrl+T` opens a new tab via [`build_spec`]; `Ctrl+W` closes the active one.
+//! (§9). `Ctrl+T` opens a new tab via [`build_spec`]; `Ctrl+W` closes the active one. `/specviz`
+//! serves the active tab's specs in the browser from a background task.
 
 mod app;
 mod highlight;
@@ -14,6 +15,7 @@ mod panel_widgets;
 mod roster;
 mod session_factory;
 mod slash;
+mod specviz;
 mod text;
 mod transcript;
 mod ui;

@@ -65,6 +65,7 @@ resolver `3`.
 | `.agents/docs/delegation.md` | `spawn_agent`, `SubagentSpawner`/`SubagentRunner`, delegation guardrails, subagent cancellation |
 | `.agents/docs/panel.md` | the agent status panel, subagent roster, network/documents logs, cost estimation |
 | `.agents/docs/testing.md` | writing or reasoning about tests, or CI expectations |
+| `.agents/docs/specviz.md` | `mate-specviz-server`/`mate-specviz-client`, `mate specviz`, `/specviz`, the Trunk/wasm build |
 
 ## Framework notes — read the ref that matches what you're touching
 

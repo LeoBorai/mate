@@ -1,5 +1,5 @@
 //! Slash commands (§10-shaped, `M13-3`): `/new`, `/close`, `/rename`, `/model`, `/provider`,
-//! `/tools`, `/http`, `/clear`, `/tokens`, `/quit`. [`parse`] is the whole surface — a pure
+//! `/tools`, `/http`, `/clear`, `/tokens`, `/specviz`, `/quit`. [`parse`] is the whole surface — a pure
 //! function from the submitted input line to a typed [`SlashCommand`], with no side effects and
 //! no knowledge of `App` at all, so `crate::app::App::on_key` can decide *before* anything is
 //! dispatched whether the line the user just submitted is a command or a prompt. An unparseable
@@ -17,6 +17,7 @@ pub(crate) enum SlashCommand {
     Http(Option<String>),
     Clear,
     Tokens,
+    Specviz,
     Quit,
     Unknown(String),
 }
@@ -48,6 +49,7 @@ pub(crate) fn parse(input: &str) -> Option<SlashCommand> {
         "http" => SlashCommand::Http(rest),
         "clear" => SlashCommand::Clear,
         "tokens" => SlashCommand::Tokens,
+        "specviz" => SlashCommand::Specviz,
         "quit" | "q" => SlashCommand::Quit,
         _ => SlashCommand::Unknown(name),
     })
@@ -127,5 +129,11 @@ mod tests {
             parse("/model org/other-model"),
             Some(SlashCommand::Model(Some("org/other-model".to_string())))
         );
+    }
+
+    #[test]
+    fn specviz_parses_case_insensitively() {
+        assert_eq!(parse("/specviz"), Some(SlashCommand::Specviz), "the bare command");
+        assert_eq!(parse("/SPECVIZ"), Some(SlashCommand::Specviz), "names are case-insensitive");
     }
 }

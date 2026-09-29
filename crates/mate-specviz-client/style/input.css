@@ -1,0 +1,52 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * OpenSpec rendering classes. The server emits these into rendered spec HTML
+ * (mate-specviz-server's markdown renderer, which also restricts sanitizing
+ * to exactly this set), so Tailwind's content scan of src/ never sees them.
+ * Rules inside @layer components are always emitted, which keeps them in the
+ * release build.
+ */
+@layer components {
+  .sv-delta {
+    @apply mt-8 mb-3 flex items-center gap-2 border-b border-slate-200 pb-1 text-lg font-semibold;
+  }
+
+  .sv-badge {
+    @apply rounded px-2 py-0.5 text-xs font-bold tracking-wide text-white;
+  }
+
+  .sv-delta-added .sv-badge {
+    @apply bg-emerald-600;
+  }
+
+  .sv-delta-modified .sv-badge {
+    @apply bg-amber-500;
+  }
+
+  .sv-delta-removed .sv-badge {
+    @apply bg-rose-600;
+  }
+
+  .sv-delta-renamed .sv-badge {
+    @apply bg-sky-600;
+  }
+
+  .sv-req {
+    @apply mt-6 mb-2 border-l-4 border-indigo-400 pl-3 text-base font-semibold text-slate-800;
+  }
+
+  .sv-scenario {
+    @apply my-3 rounded-lg border border-slate-200 bg-slate-50 px-4 py-2;
+  }
+
+  .sv-scenario h4 {
+    @apply mt-1 mb-1 text-sm font-semibold text-slate-600;
+  }
+
+  .sv-kw {
+    @apply font-mono text-xs font-bold uppercase text-indigo-700;
+  }
+}

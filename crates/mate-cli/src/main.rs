@@ -1,6 +1,7 @@
 //! `mate` binary: parses args, layers config (flags → env → project file →
 //! user file → defaults), and picks a frontend — the tabbed TUI by default (`M7`/`M8`), or
-//! `--plain`/`--print` for the plain frontend `M5` ships.
+//! `--plain`/`--print` for the plain frontend `M5` ships. `mate specviz` branches off before any
+//! of that (see `specviz.rs`).
 
 mod cli;
 mod config;
@@ -8,6 +9,7 @@ mod error;
 mod firstrun;
 mod logging;
 mod plain;
+mod specviz;
 mod tui;
 
 use std::io::IsTerminal;
@@ -35,6 +37,10 @@ async fn run() -> Result<(), MateError> {
     let _log_guard = logging::init().map_err(MateError::Io)?;
 
     let args = cli::Cli::parse();
+    if let Some(cli::Command::Specviz { dir, port }) = &args.command {
+        return specviz::run(dir, *port).await.map_err(MateError::Specviz);
+    }
+
     let config = config::load(&args).map_err(MateError::Config)?;
     tracing::debug!(model = %config.model, has_api_token = config::api_token().is_some(), "config loaded");
     tracing::info!("mate started");

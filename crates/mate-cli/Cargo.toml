@@ -13,6 +13,7 @@ clap = { workspace = true }
 dunce = { workspace = true }
 figment = { workspace = true }
 mate-core = { workspace = true }
+mate-specviz-server = { workspace = true }
 mate-tool-api = { workspace = true }
 mate-tool-http = { workspace = true }
 mate-tool-mcp = { workspace = true }
@@ -20,7 +21,7 @@ mate-tool-skills = { workspace = true }
 mate-tui = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["io-std", "io-util", "signal"] }
+tokio = { workspace = true, features = ["io-std", "io-util", "net", "signal"] }
 tokio-util = { workspace = true }
 toml = { workspace = true }
 tracing = { workspace = true }

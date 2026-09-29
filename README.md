@@ -28,6 +28,18 @@ cargo install --path crates/mate-cli
 
 This installs a `mate` binary onto your `$PATH` (usually `~/.cargo/bin/mate`).
 
+To include the spec viewer's web UI (`mate specviz`, `/specviz`), build it first — it needs the
+`wasm32-unknown-unknown` target and [Trunk](https://trunkrs.dev):
+
+```sh
+rustup target add wasm32-unknown-unknown
+(cd crates/mate-specviz-client && trunk build --release)
+cargo install --path crates/mate-cli
+```
+
+Without that step `mate` still builds; the viewer then serves a "UI not built" page. Release
+binaries always include the UI.
+
 ## Quick start
 
 ```sh
@@ -112,6 +124,7 @@ Typed into the input box like a normal message, but never sent to the model:
 | `/http [on\|off]` | Show whether the active tab's agent can reach the network, or set the default |
 | `/clear` | Clear the active tab's transcript |
 | `/tokens` | Show token usage and estimated cost so far |
+| `/specviz` | Serve the active tab's `specs/` and `openspec/` in the browser; prints the URL (never opens a browser). Runs in the background, one viewer per workspace root, until `mate` quits |
 | `/quit` | Quit immediately |
 
 `/model`, `/provider`, and `/http` only affect tabs opened *after* you run them — a running
@@ -151,6 +164,23 @@ mate [PROMPT]
 ```
 
 Run `mate --help` for the authoritative, up-to-date list.
+
+### `mate specviz`
+
+```
+mate specviz [-C <PATH>] [--port <PORT>]
+  -C, --dir <PATH>              directory to serve (default .)
+      --port <PORT>             loopback port (default 7732)
+```
+
+Serves a live-reloading, read-only web view of the workspace's specs on `http://127.0.0.1:<port>`
+until Ctrl+C: plain Markdown under `specs/`, and OpenSpec's `openspec/` — capability specs with
+requirement counts, active changes with task progress, archived changes, and delta specs rendered
+with ADDED/MODIFIED/REMOVED/RENAMED badges and scenario cards. It needs no API token and starts
+no agent or MCP server. Agent flags (`--model`, `--plain`, ...) can't be combined with it.
+
+The bare word `specviz` as the first argument now selects this subcommand; to send "specviz" as a
+one-shot prompt, say more (`mate "specviz is broken, why?"`).
 
 ## Configuration
 
@@ -243,6 +273,8 @@ crates/
 ├── mate-tool-fs/     # read_file, list_dir, find_files
 ├── mate-tool-http/   # http_request, with the SSRF guards described above
 ├── mate-tool-agent/  # spawn_agent — delegation within a session
+├── mate-specviz-server/  # spec viewer: axum server, embeds the UI (`mate specviz`, `/specviz`)
+├── mate-specviz-client/  # spec viewer UI: Leptos/WASM, built by Trunk
 └── mate-tui/         # the Ratatui frontend: tabs, panel, transcript
 ```
 

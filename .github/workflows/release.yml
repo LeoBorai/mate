@@ -27,7 +27,22 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: ${{ matrix.target }},wasm32-unknown-unknown
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: trunk@0.21
+
+      # The spec viewer's UI is embedded into `mate` at compile time; build it
+      # first and refuse to ship a binary that would serve the "UI not built"
+      # page instead.
+      - name: Build specviz UI
+        working-directory: crates/mate-specviz-client
+        shell: bash
+        run: |
+          set -euo pipefail
+          trunk build --release
+          test -f dist/index.html || { echo "specviz UI bundle missing: dist/index.html"; exit 1; }
 
       - run: cargo build --release --locked -p mate-cli --target ${{ matrix.target }}
 
