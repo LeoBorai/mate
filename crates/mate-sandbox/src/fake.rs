@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
+use bollard::container::LogOutput;
 use bollard::models::{
     ContainerConfig, ContainerCreateBody, ContainerInspectResponse, ContainerState,
     ContainerStateStatusEnum, ContainerStatsResponse, ContainerSummary, ContainerTopResponse,
@@ -18,11 +19,30 @@ pub(crate) struct FakeDocker {
     containers: Mutex<HashMap<String, ContainerInspectResponse>>,
     calls: Mutex<Vec<String>>,
     pub daemon_down: Mutex<bool>,
+    /// Scripted exec results keyed by the space-joined command:
+    /// (stdout, stderr, exit code). Unscripted commands exit 1 silently.
+    scripts: Mutex<HashMap<String, (String, String, i64)>>,
 }
 
 impl FakeDocker {
     pub fn add(&self, id: &str, inspect: ContainerInspectResponse) {
         self.containers.lock().unwrap().insert(id.to_owned(), inspect);
+    }
+
+    pub fn script(&self, cmd: &str, stdout: &str, stderr: &str, code: i64) {
+        self.scripts
+            .lock()
+            .unwrap()
+            .insert(cmd.to_owned(), (stdout.to_owned(), stderr.to_owned(), code));
+    }
+
+    fn scripted(&self, exec_id: &str) -> (String, String, i64) {
+        self.scripts
+            .lock()
+            .unwrap()
+            .get(exec_id)
+            .cloned()
+            .unwrap_or_else(|| (String::new(), String::new(), 1))
     }
 
     pub fn calls(&self) -> Vec<String> {
@@ -113,18 +133,29 @@ impl DockerApi for FakeDocker {
         self.record("list".to_owned())?;
         Ok(Vec::new())
     }
-    async fn create_exec(&self, container: &str, _: ExecSpec) -> Result<String, SandboxError> {
+    async fn create_exec(&self, container: &str, spec: ExecSpec) -> Result<String, SandboxError> {
         self.record(format!("create_exec {container}"))?;
-        Ok("exec-1".to_owned())
+        let cmd = spec.cmd.join(" ");
+        self.calls.lock().unwrap().push(format!("exec {cmd}"));
+        Ok(cmd)
     }
-    async fn start_exec(&self, _: &str, _: bool) -> Result<ExecIo, SandboxError> {
-        unsupported()
+    async fn start_exec(&self, exec_id: &str, _: bool) -> Result<ExecIo, SandboxError> {
+        let (stdout, stderr, _) = self.scripted(exec_id);
+        let chunks: Vec<Result<LogOutput, SandboxError>> = vec![
+            Ok(LogOutput::StdOut { message: stdout.into_bytes().into() }),
+            Ok(LogOutput::StdErr { message: stderr.into_bytes().into() }),
+        ];
+        Ok(ExecIo {
+            output: Box::pin(futures::stream::iter(chunks)),
+            input: Box::pin(tokio::io::sink()),
+        })
     }
     async fn resize_exec(&self, _: &str, _: u16, _: u16) -> Result<(), SandboxError> {
         unsupported()
     }
-    async fn inspect_exec(&self, _: &str) -> Result<ExecInspectResponse, SandboxError> {
-        unsupported()
+    async fn inspect_exec(&self, exec_id: &str) -> Result<ExecInspectResponse, SandboxError> {
+        let (_, _, code) = self.scripted(exec_id);
+        Ok(ExecInspectResponse { exit_code: Some(code), ..Default::default() })
     }
     async fn stats_once(&self, _: &str) -> Result<ContainerStatsResponse, SandboxError> {
         unsupported()

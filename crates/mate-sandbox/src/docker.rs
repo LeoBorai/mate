@@ -414,6 +414,55 @@ pub async fn create_exec_owned(
     docker.create_exec(container, spec).await
 }
 
+/// Cap on captured stdout and on captured stderr of a one-shot exec.
+pub const CAPTURE_CAP: usize = 1024 * 1024;
+
+/// Result of a one-shot, non-tty exec.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExecOutcome {
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: Option<i64>,
+}
+
+fn append_capped(buf: &mut Vec<u8>, chunk: &[u8]) {
+    let room = CAPTURE_CAP.saturating_sub(buf.len());
+    buf.extend_from_slice(&chunk[..chunk.len().min(room)]);
+}
+
+/// Run `cmd` in an owned container with no tty and no stdin, capturing
+/// demultiplexed stdout and stderr (each capped at [`CAPTURE_CAP`]) and the
+/// exit code.
+pub async fn exec_collect(
+    docker: &dyn DockerApi,
+    container: &str,
+    session_id: &Uuid,
+    cmd: Vec<String>,
+) -> Result<ExecOutcome, SandboxError> {
+    let spec = ExecSpec {
+        cmd,
+        ..Default::default()
+    };
+    let exec = create_exec_owned(docker, container, session_id, spec).await?;
+    let mut io = docker.start_exec(&exec, false).await?;
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    while let Some(chunk) = io.output.next().await {
+        match chunk? {
+            LogOutput::StdOut { message } | LogOutput::Console { message } => {
+                append_capped(&mut out, &message)
+            }
+            LogOutput::StdErr { message } => append_capped(&mut err, &message),
+            LogOutput::StdIn { .. } => {}
+        }
+    }
+    let exit_code = docker.inspect_exec(&exec).await?.exit_code;
+    Ok(ExecOutcome {
+        stdout: String::from_utf8_lossy(&out).into_owned(),
+        stderr: String::from_utf8_lossy(&err).into_owned(),
+        exit_code,
+    })
+}
+
 /// Make sure `image` exists locally, pulling it (with progress) if not.
 pub async fn ensure_image(
     docker: &dyn DockerApi,

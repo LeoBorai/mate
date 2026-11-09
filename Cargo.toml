@@ -36,7 +36,7 @@ slotmap = "1.1.1"
 synoptic = "2.2.9"
 tempfile = "3.27.0"
 thiserror = "2.0.20"
-tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "sync", "fs", "time", "net", "signal"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "sync", "fs", "time", "net", "signal", "io-util"] }
 tokio-stream = "0.1.19"
 tokio-util = "0.7.19"
 toml = "1.1.4"

@@ -8,6 +8,7 @@ pub mod attach;
 pub mod claude;
 pub mod docker;
 pub mod error;
+pub mod headless;
 pub mod policy;
 pub mod reconcile;
 pub mod report;

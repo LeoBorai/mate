@@ -32,18 +32,18 @@ source in `~/.cargo/registry/src/`.
 
 - [x] 5.1 Add `SandboxSession` and `SandboxStatus` (D6, D10) with serde. Verify: a serde round-trip unit test, and a test that the serialized JSON keys are exactly the expected set.
 - [x] 5.2 Add `SandboxStore` (versioned JSON, temp-file then fsync then rename, directory injected). Verify: unit tests with `tempfile` cover load-missing-file as empty, save then load, and a leftover temp file not corrupting the real file.
-- [ ] 5.3 Add `reconcile` (D11) against `DockerApi`. Verify: unit tests with the fake cover running, exited, created, 404 to Missing, label mismatch to Missing, and daemon unavailable kept per session.
+- [x] 5.3 Add `reconcile` (D11) against `DockerApi`. Verify: unit tests with the fake cover running, exited, created, 404 to Missing, label mismatch to Missing, and daemon unavailable kept per session.
 
 ## 6. Claude command building and headless parsing
 
 - [x] 6.1 Add pure builders for the interactive tmux command (D7) and the headless command (D9), choosing `--session-id` or `--resume` from inputs (stored id, transcript exists). Verify: unit tests for all three D7 cases and both headless cases.
 - [ ] 6.2 Add pure `parse_headless(stdout, stderr, exit_code)` (D9). Verify: unit tests using the fixtures from 1.1 cover success, `is_error: true`, non-zero exit, malformed JSON (error carries stderr), and the not-logged-in mapping.
-- [ ] 6.3 Add `run_headless` (tmux liveness refusal, exec with `tty false`, demultiplexed capture with 1 MiB caps, `inspect_exec`, parse, persist the new `session_id`). Verify: a unit test with the fake refuses when `has-session` reports alive. The happy path is covered by the integration test in 9.1.
+- [x] 6.3 Add `run_headless` (tmux liveness refusal, exec with `tty false`, demultiplexed capture with 1 MiB caps, `inspect_exec`, parse, persist the new `session_id`). Verify: a unit test with the fake refuses when `has-session` reports alive. The happy path is covered by the integration test in 9.1.
 
 ## 7. Inspection report
 
-- [ ] 7.1 Add `SessionReport` and pure `report::build` (D13), including the CPU % delta formula and env names only. Verify: unit tests with canned inspect, stats, changes, and top values assert the CPU %, memory, net and block totals, mount RW flags, and that no env value string appears anywhere in the built report's `Debug` output.
-- [ ] 7.2 Add `inspect_session(id)`, which fetches the four calls (stats, changes, and top only when Running) and builds the report. Verify: a unit test with the fake for a stopped container shows the configured section and an "observed: not running" state.
+- [x] 7.1 Add `SessionReport` and pure `report::build` (D13), including the CPU % delta formula and env names only. Verify: unit tests with canned inspect, stats, changes, and top values assert the CPU %, memory, net and block totals, mount RW flags, and that no env value string appears anywhere in the built report's `Debug` output.
+- [x] 7.2 Add `inspect_session(id)`, which fetches the four calls (stats, changes, and top only when Running) and builds the report. Verify: a unit test with the fake for a stopped container shows the configured section and an "observed: not running" state.
 
 ## 8. Interactive attach
 

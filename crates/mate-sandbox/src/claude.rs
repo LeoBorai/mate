@@ -2,6 +2,8 @@
 
 use uuid::Uuid;
 
+use crate::error::SandboxError;
+
 /// Name of the tmux session that hosts interactive Claude Code.
 pub const TMUX_SESSION: &str = "claude";
 
@@ -86,6 +88,70 @@ pub fn tmux_detach_command() -> Vec<String> {
     ["tmux", "detach-client", "-s", TMUX_SESSION].map(str::to_owned).into()
 }
 
+/// What a successful headless turn returns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeadlessResult {
+    pub result: String,
+    pub session_id: Option<Uuid>,
+}
+
+/// Shown when a headless turn fails because login has not happened.
+pub const NOT_LOGGED_IN: &str = "Claude Code is not logged in: attach and log in first";
+
+#[derive(serde::Deserialize)]
+struct RawHeadless {
+    #[serde(default)]
+    result: String,
+    #[serde(default)]
+    session_id: Option<String>,
+    #[serde(default)]
+    is_error: bool,
+}
+
+fn mentions_login(text: &str) -> bool {
+    let t = text.to_ascii_lowercase();
+    ["/login", "not logged in", "authenticat", "invalid api key", "please log in", "oauth"]
+        .iter()
+        .any(|needle| t.contains(needle))
+}
+
+/// Parse `claude -p --output-format json` output. Pure.
+///
+/// A non-zero exit, `is_error: true`, or unparseable stdout is
+/// [`SandboxError::Headless`] carrying the exit code and stderr. Text that
+/// mentions login or authentication maps to [`NOT_LOGGED_IN`].
+pub fn parse_headless(
+    stdout: &str,
+    stderr: &str,
+    exit_code: Option<i64>,
+) -> Result<HeadlessResult, SandboxError> {
+    let fail = |detail: String| SandboxError::Headless {
+        exit_code,
+        stderr: stderr.to_owned(),
+        detail: if mentions_login(&detail) || mentions_login(stderr) {
+            NOT_LOGGED_IN.to_owned()
+        } else {
+            detail
+        },
+    };
+    let parsed = serde_json::from_str::<RawHeadless>(stdout.trim());
+    if exit_code != Some(0) {
+        let detail = match &parsed {
+            Ok(raw) if !raw.result.is_empty() => raw.result.clone(),
+            _ => format!("exited with code {}", exit_code.map_or("?".into(), |c| c.to_string())),
+        };
+        return Err(fail(detail));
+    }
+    match parsed {
+        Ok(raw) if raw.is_error => Err(fail(raw.result)),
+        Ok(raw) => Ok(HeadlessResult {
+            result: raw.result,
+            session_id: raw.session_id.and_then(|s| Uuid::parse_str(&s).ok()),
+        }),
+        Err(e) => Err(fail(format!("unparseable output: {e}"))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,6 +224,54 @@ mod tests {
             transcript_path("/home/u/.claude", A),
             format!("/home/u/.claude/projects/-workspace/{A}.jsonl"),
             "transcripts live under the cwd-named project directory"
+        );
+    }
+
+    const SID: &str = "11111111-2222-4333-8444-555555555555";
+
+    #[test]
+    fn parse_success() {
+        let out = format!(r#"{{"type":"result","is_error":false,"result":"hello","session_id":"{SID}"}}"#);
+        let r = parse_headless(&out, "", Some(0)).unwrap();
+        assert_eq!(r.result, "hello", "result text extracted");
+        assert_eq!(r.session_id, Some(Uuid::parse_str(SID).unwrap()), "session id extracted");
+    }
+
+    #[test]
+    fn parse_is_error_true_fails() {
+        let out = r#"{"is_error":true,"result":"boom"}"#;
+        let err = parse_headless(out, "warn", Some(0)).unwrap_err();
+        assert!(
+            matches!(&err, SandboxError::Headless { exit_code: Some(0), stderr, detail } if stderr == "warn" && detail == "boom"),
+            "is_error surfaces the result text with stderr, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn parse_nonzero_exit_fails() {
+        let err = parse_headless("", "bad", Some(2)).unwrap_err();
+        assert!(
+            matches!(&err, SandboxError::Headless { exit_code: Some(2), stderr, .. } if stderr == "bad"),
+            "non-zero exit carries code and stderr, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn parse_malformed_json_carries_stderr() {
+        let err = parse_headless("not json", "oops", Some(0)).unwrap_err();
+        assert!(
+            matches!(&err, SandboxError::Headless { stderr, detail, .. } if stderr == "oops" && detail.contains("unparseable")),
+            "malformed output is an error carrying stderr, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn parse_not_logged_in_maps_to_attach_message() {
+        let out = r#"{"is_error":true,"result":"Invalid API key · Please run /login"}"#;
+        let err = parse_headless(out, "", Some(1)).unwrap_err();
+        assert!(
+            matches!(&err, SandboxError::Headless { detail, .. } if detail == NOT_LOGGED_IN),
+            "login failures tell the user to attach and log in, got {err:?}"
         );
     }
 }
