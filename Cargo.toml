@@ -9,6 +9,7 @@ edition = "2024"
 [workspace.dependencies]
 anyhow = "1.0.104"
 async-trait = "0.1.92"
+bollard = "0.21.1"
 clap = { version = "4.6.6", features = ["derive"] }
 crossterm = { version = "0.29.0", features = ["event-stream"] }
 dashmap = "6.2.1"
@@ -35,7 +36,7 @@ slotmap = "1.1.1"
 synoptic = "2.2.9"
 tempfile = "3.27.0"
 thiserror = "2.0.20"
-tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "sync", "fs", "time"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "sync", "fs", "time", "net", "signal"] }
 tokio-stream = "0.1.19"
 tokio-util = "0.7.19"
 toml = "1.1.4"
@@ -44,9 +45,11 @@ tracing-appender = "0.2.5"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 ulid = "3.0.0"
 url = "2.5.8"
+uuid = { version = "1.29.2", features = ["v4", "serde"] }
 wiremock = "0.6.5"
 
 mate-core = { path = "crates/mate-core" }
+mate-sandbox = { path = "crates/mate-sandbox" }
 mate-tool-agent = { path = "crates/mate-tool-agent" }
 mate-tool-api = { path = "crates/mate-tool-api" }
 mate-tool-fs = { path = "crates/mate-tool-fs" }

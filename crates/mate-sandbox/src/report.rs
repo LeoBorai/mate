@@ -1,0 +1,1 @@
+//! Sandbox report module (stub).
