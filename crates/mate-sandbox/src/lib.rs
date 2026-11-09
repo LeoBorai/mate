@@ -13,3 +13,7 @@ pub mod reconcile;
 pub mod report;
 pub mod session;
 pub mod store;
+
+#[cfg(test)]
+pub(crate) mod fake;
+pub mod spec;

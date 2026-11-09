@@ -12,7 +12,7 @@ source in `~/.cargo/registry/src/`.
 ## 2. Crate scaffolding and dependencies
 
 - [x] 2.1 Create `crates/mate-sandbox` (`Cargo.toml`, `src/lib.rs` with module stubs `docker`, `policy`, `session`, `store`, `reconcile`, `claude`, `report`, `error`, `attach`). Add it to the root `[workspace.dependencies]` and members. Verify: the files exist and the workspace member list includes the crate.
-- [ ] 2.2 Add `bollard` (latest stable) and `uuid` (`v4`, `serde`) to `[workspace.dependencies]`, and add tokio features `net` and `signal`. Ask the user to run `cargo fetch`, then read the fetched `bollard` source and record its version plus the exact types and methods used (containers, exec, images, volumes, stats) as a short note at the top of `docker.rs`. Verify: the note names real paths in `~/.cargo/registry/src/` for the bollard version.
+- [x] 2.2 Add `bollard` (latest stable) and `uuid` (`v4`, `serde`) to `[workspace.dependencies]`, and add tokio features `net` and `signal`. Ask the user to run `cargo fetch`, then read the fetched `bollard` source and record its version plus the exact types and methods used (containers, exec, images, volumes, stats) as a short note at the top of `docker.rs`. Verify: the note names real paths in `~/.cargo/registry/src/` for the bollard version.
 
 ## 3. Errors, policy, and host-config translation
 
@@ -22,10 +22,10 @@ source in `~/.cargo/registry/src/`.
 
 ## 4. Docker wrapper
 
-- [ ] 4.1 Define the `DockerApi` trait (D2), and add `BollardDocker` built with `Docker::connect_with_socket_defaults()`, implementing every method using only the API recorded in 2.2. Map errors as in D2. Verify: unit tests for the error-mapping function (connection error to `DaemonUnavailable`, 404 to `NotFound`).
-- [ ] 4.2 Add the label ownership guard (D3) used by stop, remove, and exec. Verify: a unit test with the fake refuses a container with a missing or mismatched label and returns `NotOurs`.
-- [ ] 4.3 Add `ensure_image` with a progress callback or stream, and `list_managed_containers` filtered by `managed-by=mate`. Verify: covered by the integration test in 4.5.
-- [ ] 4.4 Add a container-spec builder (D5, D6): name, labels, `sleep infinity`, tty, open stdin, `working_dir`, user, env `CLAUDE_CONFIG_DIR` only, and the state volume. Verify: unit tests assert the exact labels, env keys (no credential-like keys), name format `dkc-<8 hex>`, and volume name `dkc-claude-<uuid>`.
+- [x] 4.1 Define the `DockerApi` trait (D2), and add `BollardDocker` built with `Docker::connect_with_socket_defaults()`, implementing every method using only the API recorded in 2.2. Map errors as in D2. Verify: unit tests for the error-mapping function (connection error to `DaemonUnavailable`, 404 to `NotFound`).
+- [x] 4.2 Add the label ownership guard (D3) used by stop, remove, and exec. Verify: a unit test with the fake refuses a container with a missing or mismatched label and returns `NotOurs`.
+- [x] 4.3 Add `ensure_image` with a progress callback or stream, and `list_managed_containers` filtered by `managed-by=mate`. Verify: covered by the integration test in 4.5.
+- [x] 4.4 Add a container-spec builder (D5, D6): name, labels, `sleep infinity`, tty, open stdin, `working_dir`, user, env `CLAUDE_CONFIG_DIR` only, and the state volume. Verify: unit tests assert the exact labels, env keys (no credential-like keys), name format `dkc-<8 hex>`, and volume name `dkc-claude-<uuid>`.
 - [ ] 4.5 Add integration test `tests/docker.rs`, marked `#[ignore]`. It skips with a message unless `DKC_DOCKER_TESTS=1` and the daemon is reachable. It covers create, start, exec `echo hi` (output and exit code 0), inspect (labels, hardening), stop, and remove, using a small public image. Verify: the user runs `DKC_DOCKER_TESTS=1 cargo test -p mate-sandbox -- --ignored` and it passes, and running without the env var reports a skip, not a failure.
 
 ## 5. Session model, store, and reconciliation
