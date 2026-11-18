@@ -3,6 +3,10 @@ name = "mate-sandbox"
 version.workspace = true
 edition.workspace = true
 
+[features]
+# Exposes the in-memory `fake::FakeDocker` to other crates' tests.
+test-support = []
+
 [dependencies]
 async-trait = { workspace = true }
 bollard = { workspace = true }

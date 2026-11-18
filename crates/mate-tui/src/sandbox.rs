@@ -31,9 +31,11 @@ pub enum SandboxEvent {
     Created { session: SandboxSession },
     /// Start or stop changed the container's status.
     StatusChanged { id: Uuid, status: SandboxStatus },
-    /// A headless turn finished.
+    /// A headless turn finished. `claude_session_id` is the session's id after the turn (set
+    /// even when the turn failed, since it is stored before the turn runs).
     HeadlessDone {
         id: Uuid,
+        claude_session_id: Option<Uuid>,
         result: Result<HeadlessResult, SandboxError>,
     },
     /// An interactive attach ended.

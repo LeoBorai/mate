@@ -1,4 +1,4 @@
-//! In-memory [`DockerApi`] for unit tests.
+//! In-memory [`DockerApi`] for tests, here and (via the `test-support` feature) in other crates.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -15,7 +15,7 @@ use crate::docker::{DockerApi, ExecIo, ExecSpec};
 use crate::error::SandboxError;
 
 #[derive(Default)]
-pub(crate) struct FakeDocker {
+pub struct FakeDocker {
     containers: Mutex<HashMap<String, ContainerInspectResponse>>,
     calls: Mutex<Vec<String>>,
     pub daemon_down: Mutex<bool>,
@@ -61,7 +61,7 @@ impl FakeDocker {
 
 /// An inspect response with the given labels and state string
 /// (`running`, `exited`, `created`).
-pub(crate) fn labelled_inspect(labels: &[(&str, &str)], state: &str) -> ContainerInspectResponse {
+pub fn labelled_inspect(labels: &[(&str, &str)], state: &str) -> ContainerInspectResponse {
     let status = match state {
         "running" => ContainerStateStatusEnum::RUNNING,
         "exited" => ContainerStateStatusEnum::EXITED,

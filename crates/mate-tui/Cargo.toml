@@ -23,6 +23,7 @@ ulid = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+mate-sandbox = { workspace = true, features = ["test-support"] }
 mate-tool-http = { workspace = true }
 mate-tool-mcp = { workspace = true }
 rig = { workspace = true }

@@ -15,6 +15,6 @@ pub mod report;
 pub mod session;
 pub mod store;
 
-#[cfg(test)]
-pub(crate) mod fake;
+#[cfg(any(test, feature = "test-support"))]
+pub mod fake;
 pub mod spec;

@@ -43,7 +43,9 @@ use mate_core::cost::{ModelRate, estimate_cost};
 use mate_core::session::{SessionCmd, SessionEvent, SessionHandle, SessionId, SessionManager};
 use mate_core::streaming::{AgentEvent, UsageRollup};
 use mate_sandbox::attach::AttachOutcome;
-use mate_sandbox::session::SandboxSession;
+use mate_sandbox::docker::{stop_owned, verify_ownership};
+use mate_sandbox::headless::run_headless;
+use mate_sandbox::session::{SandboxSession, SandboxStatus};
 use mate_tool_api::{AgentId, DiffLine, SkillMetadata, ToolActivity};
 use std::collections::{HashMap, VecDeque};
 use tokio::sync::mpsc;
@@ -64,6 +66,9 @@ use crate::slash::SlashCommand;
 use crate::transcript::Transcript;
 use crate::ui::{self, AppView};
 use crate::wrap::WrapCache;
+
+/// Shown when a sandbox-only command runs on an agent tab.
+const ONLY_SANDBOX: &str = "only valid on a sandbox tab";
 
 const TICK: Duration = Duration::from_millis(33);
 
@@ -552,6 +557,9 @@ pub struct App {
     spawn_form: Option<SpawnForm>,
     sandbox: SandboxCtx,
     sandbox_events: mpsc::Receiver<SandboxEvent>,
+    /// Set by `/attach`; the terminal hand-off in the event loop takes it.
+    #[allow(dead_code)]
+    pending_attach: Option<uuid::Uuid>,
 }
 
 impl App {
@@ -603,6 +611,7 @@ impl App {
                 tx: sandbox_tx,
             },
             sandbox_events,
+            pending_attach: None,
         }
     }
 
@@ -669,6 +678,20 @@ impl App {
 
     fn active_agent_mut(&mut self) -> Option<&mut SessionTab> {
         self.agent_at_mut(self.active)
+    }
+
+    fn active_sandbox(&self) -> Option<&SandboxTab> {
+        match self.tabs.get(self.active)? {
+            Tab::Sandbox(tab) => Some(tab),
+            Tab::Agent(_) => None,
+        }
+    }
+
+    fn active_sandbox_mut(&mut self) -> Option<&mut SandboxTab> {
+        match self.tabs.get_mut(self.active)? {
+            Tab::Sandbox(tab) => Some(tab),
+            Tab::Agent(_) => None,
+        }
     }
 
     fn view(&mut self) -> AppView<'_> {
@@ -1024,8 +1047,9 @@ impl App {
         }
 
         // Everything below is agent-only (approvals, the detail modal, panel focus, and the
-        // prompt): a sandbox tab has none of that state, so its keys stop here.
+        // prompt): a sandbox tab has none of that state, so its keys go to its own input.
         let Some(tab) = self.active_agent() else {
+            self.on_sandbox_key(key).await;
             return;
         };
         let has_approval = !tab.pending_approvals.is_empty();
@@ -1380,6 +1404,11 @@ impl App {
             SlashCommand::Clear => self.clear_active_transcript(),
             SlashCommand::Tokens => self.show_tokens(),
             SlashCommand::Quit => self.should_quit = true,
+            SlashCommand::Attach => self.sandbox_attach(),
+            SlashCommand::Inspect => self.sandbox_command_pending("/inspect"),
+            SlashCommand::Stop => self.sandbox_set_running(false),
+            SlashCommand::Start => self.sandbox_set_running(true),
+            SlashCommand::Remove => self.sandbox_command_pending("/rm"),
             SlashCommand::Unknown(name) => self.push_system(format!("unknown command: /{name}")),
         }
     }
@@ -1694,6 +1723,150 @@ impl App {
         tab
     }
 
+    /// A key on a sandbox tab: its input box submits either a slash command or a headless
+    /// prompt. Nothing else on a sandbox tab takes input.
+    async fn on_sandbox_key(&mut self, key: KeyEvent) {
+        let Some(tab) = self.active_sandbox_mut() else {
+            return;
+        };
+        let Some(prompt) = tab.input.on_key(key) else {
+            return;
+        };
+        if let Some(command) = crate::slash::parse(&prompt) {
+            self.handle_slash_command(command).await;
+            return;
+        }
+        self.start_headless(prompt);
+    }
+
+    /// Plain text on a sandbox tab: one headless Claude Code turn in the container. Refused
+    /// locally when there is no Docker client, a turn is already running, or the container is
+    /// not running; the interactive-session refusal comes back from the turn itself.
+    fn start_headless(&mut self, prompt: String) {
+        let Some(docker) = self.sandbox.docker.clone() else {
+            self.push_system(SandboxState::Unreachable.label());
+            return;
+        };
+        let tx = self.sandbox.tx.clone();
+        let Some(tab) = self.active_sandbox_mut() else {
+            return;
+        };
+        if tab.busy {
+            tab.note("a turn is already running");
+            return;
+        }
+        if tab.state != SandboxState::Known(SandboxStatus::Running) {
+            tab.note(format!(
+                "sandbox is {}: /start it before sending a prompt",
+                tab.state.label()
+            ));
+            return;
+        }
+        tab.transcript.push_user(prompt.clone());
+        tab.busy = true;
+        let mut session = tab.session.clone();
+        tokio::spawn(async move {
+            let result = run_headless(docker.as_ref(), &mut session, &prompt).await;
+            let _ = tx
+                .send(SandboxEvent::HeadlessDone {
+                    id: session.id,
+                    claude_session_id: session.claude_session_id,
+                    result,
+                })
+                .await;
+        });
+    }
+
+    /// `/start` and `/stop`: the container call runs in a task and reports a
+    /// [`SandboxEvent::StatusChanged`] or [`SandboxEvent::Error`].
+    fn sandbox_set_running(&mut self, start: bool) {
+        let Some(session) = self.active_sandbox().map(|t| t.session.clone()) else {
+            self.push_system(ONLY_SANDBOX);
+            return;
+        };
+        let Some(docker) = self.sandbox.docker.clone() else {
+            self.push_system(SandboxState::Unreachable.label());
+            return;
+        };
+        let tx = self.sandbox.tx.clone();
+        tokio::spawn(async move {
+            let docker = &*docker;
+            let result = if start {
+                match verify_ownership(docker, &session.container_id, &session.id).await {
+                    Ok(_) => docker.start_container(&session.container_id).await,
+                    Err(err) => Err(err),
+                }
+            } else {
+                stop_owned(docker, &session.container_id, &session.id).await
+            };
+            let event = match result {
+                Ok(()) => SandboxEvent::StatusChanged {
+                    id: session.id,
+                    status: if start {
+                        SandboxStatus::Running
+                    } else {
+                        SandboxStatus::Exited
+                    },
+                },
+                Err(err) => SandboxEvent::Error {
+                    id: session.id,
+                    message: err.to_string(),
+                },
+            };
+            let _ = tx.send(event).await;
+        });
+    }
+
+    /// `/attach`: marks the sandbox for the terminal hand-off. Needs a running container and,
+    /// since raw stdin handling is Unix-only, a Unix host.
+    fn sandbox_attach(&mut self) {
+        let Some(tab) = self.active_sandbox() else {
+            self.push_system(ONLY_SANDBOX);
+            return;
+        };
+        if !cfg!(unix) {
+            self.push_system("attach is not supported on this platform");
+            return;
+        }
+        if tab.state != SandboxState::Known(SandboxStatus::Running) {
+            let message = format!(
+                "sandbox is {}: /start it before attaching",
+                tab.state.label()
+            );
+            self.push_system(message);
+            return;
+        }
+        self.pending_attach = Some(tab.session.id);
+    }
+
+    /// Placeholder for a sandbox command whose behavior is not wired yet: still rejected on an
+    /// agent tab like every sandbox command.
+    fn sandbox_command_pending(&mut self, name: &str) {
+        if self.active_sandbox().is_none() {
+            self.push_system(ONLY_SANDBOX);
+            return;
+        }
+        self.push_system(format!("{name} is not available yet"));
+    }
+
+    /// Writes every sandbox tab's session to the store. A failure is logged, not fatal.
+    fn persist_sandboxes(&self) {
+        let Some(store) = &self.sandbox.store else {
+            return;
+        };
+        let sessions: Vec<SandboxSession> = self
+            .tabs
+            .iter()
+            .filter_map(|tab| match tab {
+                Tab::Sandbox(t) => Some(t.session.clone()),
+                Tab::Agent(_) => None,
+            })
+            .collect();
+        if let Err(err) = store.save(&sessions) {
+            tracing::warn!(error = %err, "failed to save sandbox sessions");
+        }
+    }
+
     /// Routes one background sandbox result to its tab. An event for a sandbox with no open tab
     /// is ignored. Background tabs get an unread marker, or needs-attention on an error.
     fn on_sandbox_event(&mut self, event: SandboxEvent) {
@@ -1704,6 +1877,7 @@ impl App {
             let new_idx = self.tabs.len() - 1;
             self.dirty = true;
             self.switch_to(new_idx);
+            self.persist_sandboxes();
             return;
         }
         let id = event.id();
@@ -1717,8 +1891,15 @@ impl App {
         self.dirty = true;
         if matches!(event, SandboxEvent::Removed { .. }) {
             self.remove_tab_at(idx);
+            self.persist_sandboxes();
             return;
         }
+        let persist = matches!(
+            event,
+            SandboxEvent::Reconciled { result: Ok(_), .. }
+                | SandboxEvent::StatusChanged { .. }
+                | SandboxEvent::HeadlessDone { .. }
+        );
         let is_active = idx == self.active;
         let Tab::Sandbox(tab) = &mut self.tabs[idx] else {
             return;
@@ -1742,22 +1923,27 @@ impl App {
                 attention = true;
             }
             SandboxEvent::PullProgress { line, .. } => tab.progress = Some(line),
-            SandboxEvent::HeadlessDone { result: Ok(done), .. } => {
+            SandboxEvent::HeadlessDone {
+                claude_session_id,
+                result,
+                ..
+            } => {
                 tab.busy = false;
-                if done.session_id.is_some() {
-                    tab.session.claude_session_id = done.session_id;
+                tab.session.claude_session_id = claude_session_id;
+                match result {
+                    Ok(done) => {
+                        let push = tab.transcript.push_token(&done.result);
+                        tab.wrap.invalidate(push.changed);
+                        if let Some(evicted) = push.evicted {
+                            tab.wrap.invalidate(evicted);
+                        }
+                        tab.transcript.end_turn();
+                    }
+                    Err(err) => {
+                        tab.error(err.to_string());
+                        attention = true;
+                    }
                 }
-                let push = tab.transcript.push_token(&done.result);
-                tab.wrap.invalidate(push.changed);
-                if let Some(evicted) = push.evicted {
-                    tab.wrap.invalidate(evicted);
-                }
-                tab.transcript.end_turn();
-            }
-            SandboxEvent::HeadlessDone { result: Err(err), .. } => {
-                tab.busy = false;
-                tab.error(err.to_string());
-                attention = true;
             }
             SandboxEvent::AttachFinished { outcome: Ok(outcome), .. } => match outcome {
                 AttachOutcome::Detached => {
@@ -1785,6 +1971,9 @@ impl App {
             } else {
                 tab.unread = true;
             }
+        }
+        if persist {
+            self.persist_sandboxes();
         }
     }
 
@@ -3193,6 +3382,7 @@ mod tests {
         }
         app.on_sandbox_event(SandboxEvent::HeadlessDone {
             id: uuid::Uuid::from_u128(1),
+            claude_session_id: Some(claude_id),
             result: Ok(mate_sandbox::claude::HeadlessResult {
                 result: "all done".to_string(),
                 session_id: Some(claude_id),
@@ -3259,5 +3449,210 @@ mod tests {
         app.on_key(ctrl_key('p')).await;
         assert!(app.agent_at(0).is_some_and(|t| t.panel_visible), "agent panel state is untouched");
         assert_eq!(app.active, 1, "the sandbox tab stays active");
+    }
+
+    /// An app with one agent tab and one sandbox tab backed by a fake daemon that knows the
+    /// sandbox's container, already reconciled as running and selected.
+    fn running_sandbox_app(
+        fake: mate_sandbox::fake::FakeDocker,
+        store: Option<mate_sandbox::store::SandboxStore>,
+    ) -> (App, Arc<mate_sandbox::fake::FakeDocker>) {
+        let session = sandbox_session(1);
+        fake.add(
+            &session.container_id,
+            mate_sandbox::fake::labelled_inspect(
+                &[
+                    ("managed-by", "mate"),
+                    ("session-id", &session.id.to_string()),
+                ],
+                "running",
+            ),
+        );
+        let fake = Arc::new(fake);
+        let docker: Arc<dyn mate_sandbox::docker::DockerApi> = fake.clone();
+        let mut app = test_app(1).with_sandbox(SandboxWiring::new(
+            Some(docker),
+            store,
+            vec![session],
+        ));
+        app.on_sandbox_event(SandboxEvent::Reconciled {
+            id: uuid::Uuid::from_u128(1),
+            result: Ok(SandboxStatus::Running),
+        });
+        app.switch_to(1);
+        (app, fake)
+    }
+
+    fn sandbox_errors(app: &App) -> Vec<String> {
+        sandbox_tab(app, 1)
+            .transcript
+            .iter()
+            .filter_map(|e| match e {
+                crate::transcript::Entry::SystemError { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn sandbox_notes(app: &App) -> Vec<String> {
+        sandbox_tab(app, 1)
+            .transcript
+            .iter()
+            .filter_map(|e| match e {
+                crate::transcript::Entry::System { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn sandbox_commands_on_an_agent_tab_say_they_are_sandbox_only() {
+        let mut app = test_app(1);
+        for command in ["/attach", "/inspect", "/stop", "/start", "/rm"] {
+            submit(&mut app, command).await;
+        }
+        let notes: Vec<String> = app.tabs[0]
+            .transcript
+            .iter()
+            .filter_map(|e| match e {
+                crate::transcript::Entry::System { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            notes,
+            vec![ONLY_SANDBOX; 5],
+            "every sandbox command is refused on an agent tab"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_prompt_with_no_docker_client_reports_the_daemon_unreachable() {
+        let mut app = app_with_sandboxes(&[1]);
+        app.switch_to(1);
+        submit(&mut app, "hello").await;
+        assert_eq!(
+            sandbox_notes(&app),
+            vec!["Docker daemon unreachable"],
+            "no client means no turn and a clear message"
+        );
+        assert!(!sandbox_tab(&app, 1).busy, "no turn was started");
+    }
+
+    #[tokio::test]
+    async fn a_prompt_to_a_stopped_sandbox_asks_the_user_to_start_it() {
+        let (mut app, fake) = running_sandbox_app(Default::default(), None);
+        app.on_sandbox_event(SandboxEvent::StatusChanged {
+            id: uuid::Uuid::from_u128(1),
+            status: SandboxStatus::Exited,
+        });
+        submit(&mut app, "hello").await;
+        assert!(
+            sandbox_notes(&app)[0].contains("/start"),
+            "a stopped sandbox points at /start, got {:?}",
+            sandbox_notes(&app)
+        );
+        assert!(fake.calls().is_empty(), "no Docker call was made");
+    }
+
+    #[tokio::test]
+    async fn a_headless_turn_is_refused_while_the_interactive_session_is_alive() {
+        let fake = mate_sandbox::fake::FakeDocker::default();
+        fake.script("tmux has-session -t claude", "", "", 0);
+        let (mut app, _fake) = running_sandbox_app(fake, None);
+        submit(&mut app, "hello").await;
+        assert!(sandbox_tab(&app, 1).busy, "the turn is in flight until the task reports");
+        let event = app.sandbox_events.recv().await.unwrap();
+        app.on_sandbox_event(event);
+        let errors = sandbox_errors(&app);
+        assert_eq!(errors.len(), 1, "the refusal is one error line");
+        assert!(
+            errors[0].contains(mate_sandbox::headless::INTERACTIVE_ALIVE),
+            "the refusal tells the user to exit Claude Code first, got {errors:?}"
+        );
+        assert!(!sandbox_tab(&app, 1).busy, "the tab is free again after the refusal");
+    }
+
+    #[tokio::test]
+    async fn stop_and_start_call_docker_and_update_the_status() {
+        let (mut app, fake) = running_sandbox_app(Default::default(), None);
+        submit(&mut app, "/stop").await;
+        let event = app.sandbox_events.recv().await.unwrap();
+        app.on_sandbox_event(event);
+        assert_eq!(
+            sandbox_tab(&app, 1).state,
+            SandboxState::Known(SandboxStatus::Exited),
+            "a successful stop shows exited"
+        );
+        submit(&mut app, "/start").await;
+        let event = app.sandbox_events.recv().await.unwrap();
+        app.on_sandbox_event(event);
+        assert_eq!(
+            sandbox_tab(&app, 1).state,
+            SandboxState::Known(SandboxStatus::Running),
+            "a successful start shows running"
+        );
+        let calls = fake.calls();
+        assert!(
+            calls.contains(&"stop container-1".to_string())
+                && calls.contains(&"start container-1".to_string()),
+            "both container calls reached the daemon, got {calls:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_stop_reports_the_error_in_the_tab() {
+        let (mut app, fake) = running_sandbox_app(Default::default(), None);
+        *fake.daemon_down.lock().unwrap() = true;
+        submit(&mut app, "/stop").await;
+        let event = app.sandbox_events.recv().await.unwrap();
+        app.on_sandbox_event(event);
+        assert_eq!(
+            sandbox_errors(&app),
+            vec!["Docker daemon unreachable"],
+            "the daemon error is shown, not swallowed"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn attach_marks_a_running_sandbox_and_refuses_a_stopped_one() {
+        let (mut app, _fake) = running_sandbox_app(Default::default(), None);
+        submit(&mut app, "/attach").await;
+        assert_eq!(
+            app.pending_attach,
+            Some(uuid::Uuid::from_u128(1)),
+            "a running sandbox is marked for the terminal hand-off"
+        );
+        app.pending_attach = None;
+        app.on_sandbox_event(SandboxEvent::StatusChanged {
+            id: uuid::Uuid::from_u128(1),
+            status: SandboxStatus::Exited,
+        });
+        submit(&mut app, "/attach").await;
+        assert_eq!(app.pending_attach, None, "a stopped sandbox is not attached");
+        assert!(
+            sandbox_notes(&app)[0].contains("/start"),
+            "the refusal points at /start, got {:?}",
+            sandbox_notes(&app)
+        );
+    }
+
+    #[tokio::test]
+    async fn status_changes_are_saved_to_the_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = mate_sandbox::store::SandboxStore::new(dir.path());
+        let (mut app, _fake) = running_sandbox_app(Default::default(), Some(store.clone()));
+        app.on_sandbox_event(SandboxEvent::StatusChanged {
+            id: uuid::Uuid::from_u128(1),
+            status: SandboxStatus::Exited,
+        });
+        let saved = store.load().unwrap();
+        assert_eq!(saved.len(), 1, "the one sandbox session is stored");
+        assert_eq!(
+            saved[0].status,
+            SandboxStatus::Exited,
+            "the stored session carries the new status"
+        );
     }
 }

@@ -1,5 +1,6 @@
 //! Slash commands (§10-shaped, `M13-3`): `/new`, `/close`, `/rename`, `/model`, `/provider`,
-//! `/tools`, `/http`, `/clear`, `/tokens`, `/quit`. [`parse`] is the whole surface — a pure
+//! `/tools`, `/http`, `/clear`, `/tokens`, `/quit`, and the sandbox-tab commands `/attach`,
+//! `/inspect`, `/stop`, `/start`, `/rm`. [`parse`] is the whole surface — a pure
 //! function from the submitted input line to a typed [`SlashCommand`], with no side effects and
 //! no knowledge of `App` at all, so `crate::app::App::on_key` can decide *before* anything is
 //! dispatched whether the line the user just submitted is a command or a prompt. An unparseable
@@ -18,6 +19,12 @@ pub(crate) enum SlashCommand {
     Clear,
     Tokens,
     Quit,
+    /// Sandbox-tab commands.
+    Attach,
+    Inspect,
+    Stop,
+    Start,
+    Remove,
     Unknown(String),
 }
 
@@ -49,6 +56,11 @@ pub(crate) fn parse(input: &str) -> Option<SlashCommand> {
         "clear" => SlashCommand::Clear,
         "tokens" => SlashCommand::Tokens,
         "quit" | "q" => SlashCommand::Quit,
+        "attach" => SlashCommand::Attach,
+        "inspect" => SlashCommand::Inspect,
+        "stop" => SlashCommand::Stop,
+        "start" => SlashCommand::Start,
+        "rm" => SlashCommand::Remove,
         _ => SlashCommand::Unknown(name),
     })
 }
@@ -108,6 +120,15 @@ mod tests {
             Some(SlashCommand::Unknown("frobnicate".to_string())),
             "anything starting with / must never fall through to the model as a prompt"
         );
+    }
+
+    #[test]
+    fn sandbox_commands_parse_without_arguments() {
+        assert_eq!(parse("/attach"), Some(SlashCommand::Attach));
+        assert_eq!(parse("/inspect"), Some(SlashCommand::Inspect));
+        assert_eq!(parse("/stop"), Some(SlashCommand::Stop));
+        assert_eq!(parse("/start"), Some(SlashCommand::Start));
+        assert_eq!(parse("/rm"), Some(SlashCommand::Remove));
     }
 
     #[test]
