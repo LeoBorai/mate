@@ -19,7 +19,8 @@ use mate_core::session::SessionManager;
 use mate_tool_http::HttpShared;
 use mate_tool_mcp::McpServers;
 use mate_tui::{
-    CompleteOnboarding, InitialSession, PendingOnboarding, SessionDefaults, StartedSessions,
+    CompleteOnboarding, InitialSession, PendingOnboarding, SandboxWiring, SessionDefaults,
+    StartedSessions,
 };
 
 use crate::config::{BackendKind, Config, api_token};
@@ -39,6 +40,7 @@ pub async fn run(cli: &crate::cli::Cli, config: &Config) -> Result<(), MateError
                 started.sessions,
                 started.defaults,
                 started.pricing,
+                SandboxWiring::disabled(),
             )
             .await
             .map_err(|err| MateError::Io(anyhow::anyhow!(err)))
@@ -66,7 +68,7 @@ async fn run_with_onboarding(cli: &crate::cli::Cli, config: &Config) -> Result<(
         })
     });
 
-    mate_tui::run_with_onboarding(PendingOnboarding { complete })
+    mate_tui::run_with_onboarding(PendingOnboarding { complete }, SandboxWiring::disabled())
         .await
         .map_err(|err| MateError::Io(anyhow::anyhow!(err)))
 }

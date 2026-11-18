@@ -12,6 +12,7 @@ mod onboarding;
 mod panel;
 mod panel_widgets;
 mod roster;
+mod sandbox;
 mod session_factory;
 mod slash;
 mod text;
@@ -20,5 +21,6 @@ mod ui;
 mod wrap;
 
 pub use app::{InitialSession, TuiError, run, run_with_onboarding};
+pub use sandbox::{SandboxEvent, SandboxWiring};
 pub use onboarding::{CompleteOnboarding, PendingOnboarding, StartedSessions};
 pub use session_factory::{SessionDefaults, build_spec, build_tool_ctx};

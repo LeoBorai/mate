@@ -57,7 +57,7 @@ source in `~/.cargo/registry/src/`.
 
 ## 9. TUI integration
 
-- [ ] 9.1 Refactor `App.tabs` to `Vec<Tab>` with `Tab::{Agent, Sandbox}` and `as_agent(_mut)` accessors. Agent-only paths become no-ops on sandbox tabs. Verify: all existing `mate-tui` tests pass unchanged except for mechanical constructor updates.
+- [x] 9.1 Refactor `App.tabs` to `Vec<Tab>` with `Tab::{Agent, Sandbox}` and `as_agent(_mut)` accessors. Agent-only paths become no-ops on sandbox tabs. Verify: all existing `mate-tui` tests pass unchanged except for mechanical constructor updates.
 - [ ] 9.2 Add `SandboxTab`, `SandboxEvent`, and the second `select!` arm in `run_loop`. Every Docker action is spawned with a cloned sender. Verify: unit tests feed `SandboxEvent`s into `App` and assert transcript and status changes, and that an event for an unknown id is ignored.
 - [ ] 9.3 Add slash commands `/attach`, `/inspect`, `/stop`, `/start`, and `/rm` to `slash::parse`, plus plain-text-as-headless on sandbox tabs. Verify: `slash.rs` parse tests, and `App` tests for "only valid on a sandbox tab" on agent tabs and the headless refusal message.
 - [ ] 9.4 Add `/rm` two-step confirm (container, then a separate volume question warning about login and transcripts). Verify: `App` tests that declining at each step issues no removal and confirming issues the right calls on the fake.

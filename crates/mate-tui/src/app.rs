@@ -42,6 +42,8 @@ use futures::StreamExt;
 use mate_core::cost::{ModelRate, estimate_cost};
 use mate_core::session::{SessionCmd, SessionEvent, SessionHandle, SessionId, SessionManager};
 use mate_core::streaming::{AgentEvent, UsageRollup};
+use mate_sandbox::attach::AttachOutcome;
+use mate_sandbox::session::SandboxSession;
 use mate_tool_api::{AgentId, DiffLine, SkillMetadata, ToolActivity};
 use std::collections::{HashMap, VecDeque};
 use tokio::sync::mpsc;
@@ -56,6 +58,7 @@ use crate::onboarding::{
 use crate::panel::Panel;
 use crate::panel_widgets::{PanelFocus, PanelWidgetKind};
 use crate::roster::Roster;
+use crate::sandbox::{SandboxCtx, SandboxEvent, SandboxState, SandboxWiring};
 use crate::session_factory::{self, SessionDefaults};
 use crate::slash::SlashCommand;
 use crate::transcript::Transcript;
@@ -264,12 +267,15 @@ impl SessionTab {
 }
 
 /// A sandbox tab's view state: the same transcript, wrap cache, input, and scroll an agent tab
-/// has, but none of its agent-only state (model, usage, panel, approvals).
-// Nothing opens a sandbox tab yet, so the variant and constructor are unused until the sandbox
-// event wiring lands.
-#[allow(dead_code)]
+/// has, but none of its agent-only state (model, usage, panel, approvals). `state` is what the
+/// last reconcile or action reported; `busy` is true while a headless turn is in flight.
 struct SandboxTab {
+    session: SandboxSession,
     title: String,
+    state: SandboxState,
+    /// The latest image pull or build progress line, cleared once the sandbox is created.
+    progress: Option<String>,
+    busy: bool,
     transcript: Transcript,
     wrap: WrapCache,
     previews: PreviewCache,
@@ -279,11 +285,14 @@ struct SandboxTab {
     needs_attention: bool,
 }
 
-#[allow(dead_code)]
 impl SandboxTab {
-    fn new(title: String) -> Self {
+    fn new(session: SandboxSession, state: SandboxState) -> Self {
         Self {
-            title,
+            title: session.name.clone(),
+            session,
+            state,
+            progress: None,
+            busy: false,
             transcript: Transcript::new(),
             wrap: WrapCache::new(),
             previews: PreviewCache::new(),
@@ -293,12 +302,40 @@ impl SandboxTab {
             needs_attention: false,
         }
     }
+
+    /// Appends one line of local feedback to the transcript.
+    fn note(&mut self, text: impl Into<String>) {
+        if let Some(evicted) = self.transcript.push_system(text.into()) {
+            self.wrap.invalidate(evicted);
+        }
+    }
+
+    /// Appends an error line to the transcript.
+    fn error(&mut self, text: String) {
+        if let Some(evicted) = self.transcript.push_error(text) {
+            self.wrap.invalidate(evicted);
+        }
+    }
+
+    /// The one line the status bar shows for this tab.
+    fn status_line(&self) -> String {
+        let mut line = format!(
+            "sandbox {} · {} · {}",
+            self.session.name,
+            self.state.label(),
+            self.session.image
+        );
+        if let Some(progress) = &self.progress {
+            line.push_str(" · ");
+            line.push_str(progress);
+        }
+        line
+    }
 }
 
 /// One open tab: an agent session, or a sandbox. Code that needs agent state (the panel,
 /// approvals, model, usage) goes through [`Tab::as_agent`]/[`Tab::as_agent_mut`] and does
 /// nothing on a sandbox tab.
-#[allow(dead_code)]
 enum Tab {
     Agent(SessionTab),
     Sandbox(SandboxTab),
@@ -513,6 +550,8 @@ pub struct App {
     dirty: bool,
     should_quit: bool,
     spawn_form: Option<SpawnForm>,
+    sandbox: SandboxCtx,
+    sandbox_events: mpsc::Receiver<SandboxEvent>,
 }
 
 impl App {
@@ -523,6 +562,11 @@ impl App {
         defaults: SessionDefaults,
         pricing: HashMap<String, ModelRate>,
     ) -> Self {
+        let SandboxWiring {
+            events: sandbox_events,
+            tx: sandbox_tx,
+            ..
+        } = SandboxWiring::disabled();
         let tabs = sessions
             .into_iter()
             .map(|s| {
@@ -553,6 +597,61 @@ impl App {
             dirty: true,
             should_quit: false,
             spawn_form: None,
+            sandbox: SandboxCtx {
+                docker: None,
+                store: None,
+                tx: sandbox_tx,
+            },
+            sandbox_events,
+        }
+    }
+
+    /// Opens one sandbox tab per stored session, each "checking" until [`App::start_reconcile`]
+    /// reports back, and adopts the wiring's Docker client, store, and event channel.
+    fn with_sandbox(mut self, wiring: SandboxWiring) -> Self {
+        let SandboxWiring {
+            docker,
+            store,
+            sessions,
+            events,
+            tx,
+        } = wiring;
+        self.sandbox = SandboxCtx { docker, store, tx };
+        self.sandbox_events = events;
+        self.tabs.extend(
+            sessions
+                .into_iter()
+                .map(|s| Tab::Sandbox(SandboxTab::new(s, SandboxState::Checking))),
+        );
+        self.dirty = true;
+        self
+    }
+
+    /// Reconciles every sandbox tab against Docker in the background; each answer arrives as a
+    /// [`SandboxEvent::Reconciled`]. With no Docker client, every tab reports the daemon as
+    /// unreachable instead.
+    fn start_reconcile(&self) {
+        for tab in &self.tabs {
+            let Tab::Sandbox(tab) = tab else {
+                continue;
+            };
+            let session = tab.session.clone();
+            let docker = self.sandbox.docker.clone();
+            let tx = self.sandbox.tx.clone();
+            tokio::spawn(async move {
+                let result = match docker {
+                    Some(docker) => {
+                        mate_sandbox::reconcile::reconcile_one(docker.as_ref(), &session).await
+                    }
+                    None => Err(mate_sandbox::error::SandboxError::DaemonUnavailable),
+                };
+                let _ = tx
+                    .send(SandboxEvent::Reconciled {
+                        id: session.id,
+                        result,
+                    })
+                    .await;
+            });
         }
     }
 
@@ -587,6 +686,9 @@ impl App {
         let tab = match &mut self.tabs[active] {
             Tab::Agent(tab) => tab,
             Tab::Sandbox(tab) => {
+                // Computed before the borrows below: `status_line` needs the whole tab.
+                let status = tab.status_line();
+                let busy = tab.busy;
                 return AppView {
                     tabs,
                     active,
@@ -600,11 +702,11 @@ impl App {
                             previews: &mut tab.previews,
                             input: &tab.input,
                             scroll: &mut tab.scroll,
-                            running_turn: false,
+                            running_turn: busy,
                             quit_armed,
                             close_confirm,
                         },
-                        status: "sandbox".to_string(),
+                        status,
                     }),
                 };
             }
@@ -1573,17 +1675,116 @@ impl App {
     }
 
     async fn close_tab(&mut self, idx: usize) {
-        if let Tab::Agent(tab) = self.tabs.remove(idx) {
+        if let Tab::Agent(tab) = self.remove_tab_at(idx) {
             self.manager.close(tab.id).await;
         }
+    }
+
+    /// Removes the tab at `idx`, keeps `active` pointing at a valid tab, and quits when it was
+    /// the last one.
+    fn remove_tab_at(&mut self, idx: usize) -> Tab {
+        let tab = self.tabs.remove(idx);
         if self.tabs.is_empty() {
             self.should_quit = true;
-            return;
-        }
-        if idx < self.active {
+        } else if idx < self.active {
             self.active -= 1;
         } else if self.active >= self.tabs.len() {
             self.active = self.tabs.len() - 1;
+        }
+        tab
+    }
+
+    /// Routes one background sandbox result to its tab. An event for a sandbox with no open tab
+    /// is ignored. Background tabs get an unread marker, or needs-attention on an error.
+    fn on_sandbox_event(&mut self, event: SandboxEvent) {
+        if let SandboxEvent::Created { session } = event {
+            let state = SandboxState::Known(session.status);
+            self.tabs
+                .push(Tab::Sandbox(SandboxTab::new(session, state)));
+            let new_idx = self.tabs.len() - 1;
+            self.dirty = true;
+            self.switch_to(new_idx);
+            return;
+        }
+        let id = event.id();
+        let Some(idx) = self
+            .tabs
+            .iter()
+            .position(|t| matches!(t, Tab::Sandbox(s) if s.session.id == id))
+        else {
+            return;
+        };
+        self.dirty = true;
+        if matches!(event, SandboxEvent::Removed { .. }) {
+            self.remove_tab_at(idx);
+            return;
+        }
+        let is_active = idx == self.active;
+        let Tab::Sandbox(tab) = &mut self.tabs[idx] else {
+            return;
+        };
+        let mut attention = false;
+        match event {
+            SandboxEvent::Reconciled { result: Ok(status), .. }
+            | SandboxEvent::StatusChanged { status, .. } => {
+                tab.session.status = status;
+                tab.state = SandboxState::Known(status);
+                tab.progress = None;
+            }
+            SandboxEvent::Reconciled { result: Err(err), .. } => {
+                tab.state = match err {
+                    mate_sandbox::error::SandboxError::DaemonUnavailable => {
+                        SandboxState::Unreachable
+                    }
+                    _ => SandboxState::Failed,
+                };
+                tab.error(err.to_string());
+                attention = true;
+            }
+            SandboxEvent::PullProgress { line, .. } => tab.progress = Some(line),
+            SandboxEvent::HeadlessDone { result: Ok(done), .. } => {
+                tab.busy = false;
+                if done.session_id.is_some() {
+                    tab.session.claude_session_id = done.session_id;
+                }
+                let push = tab.transcript.push_token(&done.result);
+                tab.wrap.invalidate(push.changed);
+                if let Some(evicted) = push.evicted {
+                    tab.wrap.invalidate(evicted);
+                }
+                tab.transcript.end_turn();
+            }
+            SandboxEvent::HeadlessDone { result: Err(err), .. } => {
+                tab.busy = false;
+                tab.error(err.to_string());
+                attention = true;
+            }
+            SandboxEvent::AttachFinished { outcome: Ok(outcome), .. } => match outcome {
+                AttachOutcome::Detached => {
+                    tab.note("detached: Claude Code is still running in the container");
+                }
+                AttachOutcome::Ended { exit_code: Some(code) } => {
+                    tab.note(format!("Claude Code exited with code {code}"));
+                }
+                AttachOutcome::Ended { exit_code: None } => tab.note("Claude Code exited"),
+            },
+            SandboxEvent::AttachFinished { outcome: Err(err), .. } => {
+                tab.error(err.to_string());
+                attention = true;
+            }
+            SandboxEvent::Error { message, .. } => {
+                tab.busy = false;
+                tab.error(message);
+                attention = true;
+            }
+            SandboxEvent::Created { .. } | SandboxEvent::Removed { .. } => {}
+        }
+        if !is_active {
+            if attention {
+                tab.needs_attention = true;
+            } else {
+                tab.unread = true;
+            }
         }
     }
 
@@ -1662,12 +1863,13 @@ pub async fn run(
     sessions: Vec<InitialSession>,
     defaults: SessionDefaults,
     pricing: HashMap<String, ModelRate>,
+    sandbox: SandboxWiring,
 ) -> Result<(), TuiError> {
     if sessions.is_empty() {
         return Ok(());
     }
     let mut terminal = init_terminal()?;
-    let app = App::new(manager, events, sessions, defaults, pricing);
+    let app = App::new(manager, events, sessions, defaults, pricing).with_sandbox(sandbox);
     drive(app, &mut terminal).await
 }
 
@@ -1676,7 +1878,10 @@ pub async fn run(
 /// once `pending.complete` has verified the token and spawned the sessions. A failed attempt
 /// shows its error inline on the token step and can be retried without restarting; backing out
 /// of the first step (or `Ctrl+C`) exits cleanly with `Ok(())` and no sessions ever started.
-pub async fn run_with_onboarding(pending: PendingOnboarding) -> Result<(), TuiError> {
+pub async fn run_with_onboarding(
+    pending: PendingOnboarding,
+    sandbox: SandboxWiring,
+) -> Result<(), TuiError> {
     let mut terminal = init_terminal()?;
     let started = match run_onboarding(&mut terminal, &pending).await {
         Ok(Some(started)) if !started.sessions.is_empty() => started,
@@ -1695,7 +1900,8 @@ pub async fn run_with_onboarding(pending: PendingOnboarding) -> Result<(), TuiEr
         started.sessions,
         started.defaults,
         started.pricing,
-    );
+    )
+    .with_sandbox(sandbox);
     drive(app, &mut terminal).await
 }
 
@@ -1711,6 +1917,7 @@ fn restore_terminal() {
 }
 
 async fn drive(mut app: App, terminal: &mut ratatui::DefaultTerminal) -> Result<(), TuiError> {
+    app.start_reconcile();
     let result = run_loop(&mut app, terminal).await;
     restore_terminal();
     for tab in app.tabs.iter().filter_map(Tab::as_agent) {
@@ -1809,6 +2016,9 @@ async fn run_loop(app: &mut App, terminal: &mut ratatui::DefaultTerminal) -> Res
                     None => break,
                 }
             }
+            // `App` keeps a sender, so this channel never closes; the pattern only disables the
+            // arm if it somehow did.
+            Some(event) = app.sandbox_events.recv() => app.on_sandbox_event(event),
             _ = tick.tick() => {
                 if app.dirty {
                     let mut view = app.view();
@@ -2881,5 +3091,173 @@ mod tests {
             Some(&config_rate),
             "an explicit [pricing] entry always wins over the catalog"
         );
+    }
+
+    fn sandbox_session(n: u128) -> SandboxSession {
+        let id = uuid::Uuid::from_u128(n);
+        SandboxSession {
+            id,
+            name: SandboxSession::container_name(&id),
+            container_id: format!("container-{n}"),
+            image: "mate-sandbox:test".to_string(),
+            workspace: PathBuf::from("/tmp/ws"),
+            policy: mate_sandbox::policy::SandboxPolicy::new("/tmp/ws"),
+            claude_session_id: None,
+            status: mate_sandbox::session::SandboxStatus::Exited,
+            created_at: 0,
+        }
+    }
+
+    /// One agent tab followed by one sandbox tab per id.
+    fn app_with_sandboxes(ids: &[u128]) -> App {
+        let sessions = ids.iter().map(|n| sandbox_session(*n)).collect();
+        test_app(1).with_sandbox(SandboxWiring::new(None, None, sessions))
+    }
+
+    fn sandbox_tab(app: &App, idx: usize) -> &SandboxTab {
+        match &app.tabs[idx] {
+            Tab::Sandbox(tab) => tab,
+            Tab::Agent(_) => panic!("tab {idx} should be a sandbox tab"),
+        }
+    }
+
+    #[tokio::test]
+    async fn stored_sandboxes_open_as_checking_tabs_after_the_agent_tabs() {
+        let app = app_with_sandboxes(&[1, 2]);
+        assert_eq!(app.tabs.len(), 3, "one agent tab plus one tab per stored sandbox");
+        assert_eq!(
+            sandbox_tab(&app, 1).state,
+            SandboxState::Checking,
+            "a stored sandbox is checking until reconciliation answers"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_reconciled_event_sets_the_tabs_status() {
+        let mut app = app_with_sandboxes(&[1]);
+        app.on_sandbox_event(SandboxEvent::Reconciled {
+            id: uuid::Uuid::from_u128(1),
+            result: Ok(mate_sandbox::session::SandboxStatus::Running),
+        });
+        let tab = sandbox_tab(&app, 1);
+        assert_eq!(
+            tab.state,
+            SandboxState::Known(mate_sandbox::session::SandboxStatus::Running),
+            "the reconciled status replaces `checking`"
+        );
+        assert!(
+            tab.status_line().contains("running"),
+            "the status bar line names the status"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_daemon_shows_the_message_in_the_tab() {
+        let mut app = app_with_sandboxes(&[1]);
+        app.on_sandbox_event(SandboxEvent::Reconciled {
+            id: uuid::Uuid::from_u128(1),
+            result: Err(mate_sandbox::error::SandboxError::DaemonUnavailable),
+        });
+        let tab = sandbox_tab(&app, 1);
+        assert_eq!(tab.state, SandboxState::Unreachable, "daemon down is its own state");
+        assert!(
+            tab.status_line().contains("Docker daemon unreachable"),
+            "the status line says the daemon is unreachable"
+        );
+        assert!(!tab.transcript.is_empty(), "the error is also written to the transcript");
+        assert!(tab.needs_attention, "an error on a background tab needs attention");
+    }
+
+    #[tokio::test]
+    async fn an_event_for_an_unknown_sandbox_is_ignored() {
+        let mut app = app_with_sandboxes(&[1]);
+        app.dirty = false;
+        app.on_sandbox_event(SandboxEvent::Error {
+            id: uuid::Uuid::from_u128(99),
+            message: "boom".to_string(),
+        });
+        assert!(!app.dirty, "an unknown id does not even request a redraw");
+        assert!(
+            sandbox_tab(&app, 1).transcript.is_empty(),
+            "the known sandbox's transcript is untouched"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_headless_result_lands_in_the_transcript_and_updates_the_claude_session() {
+        let mut app = app_with_sandboxes(&[1]);
+        app.switch_to(1);
+        let claude_id = uuid::Uuid::from_u128(7);
+        if let Tab::Sandbox(tab) = &mut app.tabs[1] {
+            tab.busy = true;
+        }
+        app.on_sandbox_event(SandboxEvent::HeadlessDone {
+            id: uuid::Uuid::from_u128(1),
+            result: Ok(mate_sandbox::claude::HeadlessResult {
+                result: "all done".to_string(),
+                session_id: Some(claude_id),
+            }),
+        });
+        let tab = sandbox_tab(&app, 1);
+        assert!(!tab.busy, "the turn is over");
+        assert_eq!(
+            tab.session.claude_session_id,
+            Some(claude_id),
+            "the returned Claude session id is kept for the next turn"
+        );
+        let text: Vec<String> = tab
+            .transcript
+            .iter()
+            .filter_map(|e| match e {
+                crate::transcript::Entry::Assistant { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text, ["all done"], "the result text is shown as one assistant entry");
+    }
+
+    #[tokio::test]
+    async fn background_sandbox_activity_marks_the_tab_unread_not_the_active_one() {
+        let mut app = app_with_sandboxes(&[1]);
+        app.on_sandbox_event(SandboxEvent::PullProgress {
+            id: uuid::Uuid::from_u128(1),
+            line: "layer 1/3".to_string(),
+        });
+        let tab = sandbox_tab(&app, 1);
+        assert!(tab.unread, "progress on a background tab marks it unread");
+        assert!(
+            tab.status_line().contains("layer 1/3"),
+            "the latest progress line is shown in the status bar"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_created_event_opens_and_switches_to_a_new_sandbox_tab() {
+        let mut app = test_app(1);
+        app.on_sandbox_event(SandboxEvent::Created {
+            session: sandbox_session(5),
+        });
+        assert_eq!(app.tabs.len(), 2, "the new sandbox gets a tab");
+        assert_eq!(app.active, 1, "the new tab becomes active");
+    }
+
+    #[tokio::test]
+    async fn a_removed_event_closes_the_sandbox_tab() {
+        let mut app = app_with_sandboxes(&[1]);
+        app.on_sandbox_event(SandboxEvent::Removed {
+            id: uuid::Uuid::from_u128(1),
+        });
+        assert_eq!(app.tabs.len(), 1, "only the agent tab remains");
+        assert!(!app.should_quit, "removing a sandbox tab does not quit while other tabs remain");
+    }
+
+    #[tokio::test]
+    async fn agent_only_keys_do_nothing_on_a_sandbox_tab() {
+        let mut app = app_with_sandboxes(&[1]);
+        app.switch_to(1);
+        app.on_key(ctrl_key('b')).await;
+        app.on_key(ctrl_key('p')).await;
+        assert!(app.agent_at(0).is_some_and(|t| t.panel_visible), "agent panel state is untouched");
+        assert_eq!(app.active, 1, "the sandbox tab stays active");
     }
 }
