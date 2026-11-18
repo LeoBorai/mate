@@ -47,9 +47,9 @@ source in `~/.cargo/registry/src/`.
 
 ## 8. Interactive attach
 
-- [ ] 8.1 Add a `#[cfg(unix)]` stdin raw-fd guard (`O_NONBLOCK` set/restore with `// SAFETY:`), plus a chained panic hook that restores the flags. Verify: a unit test sets and drops the guard on a pipe fd and asserts the flags are restored.
-- [ ] 8.2 Add `attach::run` (D8): AsyncFd stdin pump, `0x1c` detection triggering `tmux detach-client`, output to stdout, `SIGWINCH` to `resize_exec` plus an initial resize, and `Detached`/`Ended{exit_code}` decided via `inspect_exec` and `has-session`. Make the `0x1c` splitter a pure function. Verify: unit tests for the splitter (byte at start, middle, end, and absent).
-- [ ] 8.3 Read `crossterm` 0.29's `EventStream` and internal reader source to confirm what happens to buffered input when the stream drops. Document the finding in `.agents/docs/sandbox.md`. Verify: the doc section cites the source file.
+- [x] 8.1 Add a `#[cfg(unix)]` stdin raw-fd guard (`O_NONBLOCK` set/restore with `// SAFETY:`), plus a chained panic hook that restores the flags. Verify: a unit test sets and drops the guard on a pipe fd and asserts the flags are restored.
+- [x] 8.2 Add `attach::run` (D8): AsyncFd stdin pump, `0x1c` detection triggering `tmux detach-client`, output to stdout, `SIGWINCH` to `resize_exec` plus an initial resize, and `Detached`/`Ended{exit_code}` decided via `inspect_exec` and `has-session`. Make the `0x1c` splitter a pure function. Verify: unit tests for the splitter (byte at start, middle, end, and absent).
+- [x] 8.3 Read `crossterm` 0.29's `EventStream` and internal reader source to confirm what happens to buffered input when the stream drops. Document the finding in `.agents/docs/sandbox.md`. Verify: the doc section cites the source file.
 
 ## 9. TUI integration
 

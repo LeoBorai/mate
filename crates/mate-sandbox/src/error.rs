@@ -26,6 +26,9 @@ pub enum SandboxError {
         stderr: String,
         detail: String,
     },
+    /// The feature is not available on this platform.
+    #[error("unsupported on this platform: {0}")]
+    Unsupported(String),
     /// Reading or writing the session store failed.
     #[error("sandbox store error: {0}")]
     Store(String),
