@@ -7,19 +7,50 @@ Lets a `mate` user run Claude Code inside a hardened, per-workspace Docker conta
 ## ADDED Requirements
 
 ### Requirement: Creating a sandbox session
-The system SHALL let the user create a sandbox session from the TUI by choosing a host workspace directory, an image (defaulting to the configured image, itself defaulting to `ghcr.io/leoborai/dkc:latest`), and a network mode, then confirming. On confirm it SHALL pull the image if absent, create the container and its state volume, start the container, and open a sandbox tab for it.
+The system SHALL let the user create a sandbox session from the TUI by choosing a host workspace directory, an image (defaulting to the configured image, itself defaulting to the embedded sandbox image), and a network mode, then confirming. On confirm it SHALL make the image available (pull a registry image, or build the embedded image) if absent, create the container and its state volume, start the container, and open a sandbox tab for it.
 
 #### Scenario: Create with defaults
 - **WHEN** the user picks an existing workspace directory, keeps the default image and network mode, and confirms
 - **THEN** a container named `dkc-<short-session-id>` is created and started, and a new sandbox tab shows the session as Running
 
-#### Scenario: Image not present locally
-- **WHEN** the chosen image is not present on the Docker host
+#### Scenario: Registry image not present locally
+- **WHEN** a configured registry image is not present on the Docker host
 - **THEN** the system pulls it and shows pull progress in the TUI before creating the container
+
+#### Scenario: Embedded image not present locally
+- **WHEN** the default embedded image is not present on the Docker host
+- **THEN** the system builds it and shows build progress in the TUI before creating the container
 
 #### Scenario: Workspace directory does not exist
 - **WHEN** the user enters a workspace path that is not an existing directory
 - **THEN** the system refuses to create the session, shows the reason, and creates no container or volume
+
+### Requirement: Embedded sandbox image
+The system SHALL embed a Dockerfile and tmux configuration in the `mate` binary and use the image built from them as the default sandbox image. The image SHALL contain Claude Code, `tmux` configured with its status bar off, and a non-root user that owns its `~/.claude` directory. The image tag SHALL be derived from a hash of the embedded files, so the image is rebuilt only when those files change. A configured `image` SHALL replace the embedded image and bypass the build. Any image used for a session SHALL be checked for the contract above at creation.
+
+#### Scenario: First build
+- **WHEN** the user creates a sandbox with the default image and no image with the embedded tag exists
+- **THEN** the system builds the image from the embedded files, shows progress, and tags it `mate-sandbox:<hash12>`
+
+#### Scenario: Image reused
+- **WHEN** an image with the current embedded tag already exists
+- **THEN** the system creates the container without building
+
+#### Scenario: Embedded files changed
+- **WHEN** a new `mate` version embeds a changed Dockerfile or tmux configuration
+- **THEN** the tag differs, and the system builds a new image rather than reusing the old one
+
+#### Scenario: Build fails
+- **WHEN** the image build fails
+- **THEN** the TUI shows the build error and the system creates no container or volume
+
+#### Scenario: Override image
+- **WHEN** a configured `image` is set
+- **THEN** the system uses it and never builds the embedded image
+
+#### Scenario: Override image lacks the contract
+- **WHEN** the image lacks `tmux`, or its `~/.claude` is not writable by the image user
+- **THEN** creation reports which part of the contract is missing, and leaves the container in place for inspection
 
 ### Requirement: Container identity and ownership labels
 Every container the system creates SHALL carry the labels `managed-by=mate` and `session-id=<session id>`. The system SHALL NOT stop, remove, exec into, or otherwise act on any container lacking both labels with the expected values.

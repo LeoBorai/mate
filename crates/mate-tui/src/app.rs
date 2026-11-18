@@ -263,6 +263,157 @@ impl SessionTab {
     }
 }
 
+/// A sandbox tab's view state: the same transcript, wrap cache, input, and scroll an agent tab
+/// has, but none of its agent-only state (model, usage, panel, approvals).
+// Nothing opens a sandbox tab yet, so the variant and constructor are unused until the sandbox
+// event wiring lands.
+#[allow(dead_code)]
+struct SandboxTab {
+    title: String,
+    transcript: Transcript,
+    wrap: WrapCache,
+    previews: PreviewCache,
+    input: InputBox,
+    scroll: usize,
+    unread: bool,
+    needs_attention: bool,
+}
+
+#[allow(dead_code)]
+impl SandboxTab {
+    fn new(title: String) -> Self {
+        Self {
+            title,
+            transcript: Transcript::new(),
+            wrap: WrapCache::new(),
+            previews: PreviewCache::new(),
+            input: InputBox::new(),
+            scroll: 0,
+            unread: false,
+            needs_attention: false,
+        }
+    }
+}
+
+/// One open tab: an agent session, or a sandbox. Code that needs agent state (the panel,
+/// approvals, model, usage) goes through [`Tab::as_agent`]/[`Tab::as_agent_mut`] and does
+/// nothing on a sandbox tab.
+#[allow(dead_code)]
+enum Tab {
+    Agent(SessionTab),
+    Sandbox(SandboxTab),
+}
+
+impl Tab {
+    fn as_agent(&self) -> Option<&SessionTab> {
+        match self {
+            Tab::Agent(tab) => Some(tab),
+            Tab::Sandbox(_) => None,
+        }
+    }
+
+    fn as_agent_mut(&mut self) -> Option<&mut SessionTab> {
+        match self {
+            Tab::Agent(tab) => Some(tab),
+            Tab::Sandbox(_) => None,
+        }
+    }
+
+    fn summary(&self) -> ui::TabSummary {
+        match self {
+            Tab::Agent(t) => ui::TabSummary {
+                title: t.title.clone(),
+                streaming: t.running_turn,
+                unread: t.unread,
+                needs_attention: t.needs_attention,
+            },
+            Tab::Sandbox(t) => ui::TabSummary {
+                title: t.title.clone(),
+                streaming: false,
+                unread: t.unread,
+                needs_attention: t.needs_attention,
+            },
+        }
+    }
+
+    fn set_title(&mut self, title: String) {
+        match self {
+            Tab::Agent(t) => t.title = title,
+            Tab::Sandbox(t) => t.title = title,
+        }
+    }
+
+    fn is_flagged(&self) -> bool {
+        match self {
+            Tab::Agent(t) => t.unread || t.needs_attention,
+            Tab::Sandbox(t) => t.unread || t.needs_attention,
+        }
+    }
+
+    fn clear_markers(&mut self) {
+        match self {
+            Tab::Agent(t) => {
+                t.unread = false;
+                t.needs_attention = false;
+            }
+            Tab::Sandbox(t) => {
+                t.unread = false;
+                t.needs_attention = false;
+            }
+        }
+    }
+
+    /// Appends one line of local feedback to the transcript, dropping the wrap cache entry of
+    /// whatever it evicted.
+    fn push_system(&mut self, text: String) {
+        let (transcript, wrap) = match self {
+            Tab::Agent(t) => (&mut t.transcript, &mut t.wrap),
+            Tab::Sandbox(t) => (&mut t.transcript, &mut t.wrap),
+        };
+        if let Some(evicted) = transcript.push_system(text) {
+            wrap.invalidate(evicted);
+        }
+    }
+
+    /// `/clear`: a fresh transcript and caches — nothing outside the tab references them.
+    fn clear(&mut self) {
+        match self {
+            Tab::Agent(t) => {
+                t.transcript = Transcript::new();
+                t.wrap = WrapCache::new();
+                t.previews = PreviewCache::new();
+                t.scroll = 0;
+            }
+            Tab::Sandbox(t) => {
+                t.transcript = Transcript::new();
+                t.wrap = WrapCache::new();
+                t.previews = PreviewCache::new();
+                t.scroll = 0;
+            }
+        }
+    }
+}
+
+/// Test-only: lets the existing tests keep reading agent fields straight off `app.tabs[i]`.
+/// Panics on a sandbox tab, which is a bug in the test.
+#[cfg(test)]
+impl std::ops::Deref for Tab {
+    type Target = SessionTab;
+
+    fn deref(&self) -> &SessionTab {
+        self.as_agent()
+            .expect("test read an agent field off a sandbox tab")
+    }
+}
+
+#[cfg(test)]
+impl std::ops::DerefMut for Tab {
+    fn deref_mut(&mut self) -> &mut SessionTab {
+        self.as_agent_mut()
+            .expect("test wrote an agent field on a sandbox tab")
+    }
+}
+
 /// Which field of [`SpawnForm`] currently has focus. `pub(crate)` so `ui.rs` can match on it
 /// without `mate-tui` inventing a second copy of the same three-way choice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -355,7 +506,7 @@ pub struct App {
     /// `[pricing]` (§9.5, `M11-6`), converted once from `mate-cli`'s TOML-facing config shape —
     /// shared across every tab, the same table regardless of which session asks.
     pricing: HashMap<String, ModelRate>,
-    tabs: Vec<SessionTab>,
+    tabs: Vec<Tab>,
     active: usize,
     quit_armed: bool,
     close_confirm: bool,
@@ -375,7 +526,7 @@ impl App {
         let tabs = sessions
             .into_iter()
             .map(|s| {
-                SessionTab::new(
+                Tab::Agent(SessionTab::new(
                     s.session_id,
                     s.handle,
                     s.title,
@@ -387,7 +538,7 @@ impl App {
                     s.may_delegate,
                     s.skills,
                     s.agents_md,
-                )
+                ))
             })
             .collect();
         Self {
@@ -405,17 +556,24 @@ impl App {
         }
     }
 
+    fn agent_at(&self, idx: usize) -> Option<&SessionTab> {
+        self.tabs.get(idx).and_then(Tab::as_agent)
+    }
+
+    fn agent_at_mut(&mut self, idx: usize) -> Option<&mut SessionTab> {
+        self.tabs.get_mut(idx).and_then(Tab::as_agent_mut)
+    }
+
+    fn active_agent(&self) -> Option<&SessionTab> {
+        self.agent_at(self.active)
+    }
+
+    fn active_agent_mut(&mut self) -> Option<&mut SessionTab> {
+        self.agent_at_mut(self.active)
+    }
+
     fn view(&mut self) -> AppView<'_> {
-        let tabs: Vec<ui::TabSummary> = self
-            .tabs
-            .iter()
-            .map(|t| ui::TabSummary {
-                title: t.title.clone(),
-                streaming: t.running_turn,
-                unread: t.unread,
-                needs_attention: t.needs_attention,
-            })
-            .collect();
+        let tabs: Vec<ui::TabSummary> = self.tabs.iter().map(Tab::summary).collect();
         let active = self.active;
         let quit_armed = self.quit_armed;
         let close_confirm = self.close_confirm;
@@ -426,7 +584,31 @@ impl App {
             focus: form.focus,
             error: form.error.as_deref(),
         });
-        let tab = &mut self.tabs[active];
+        let tab = match &mut self.tabs[active] {
+            Tab::Agent(tab) => tab,
+            Tab::Sandbox(tab) => {
+                return AppView {
+                    tabs,
+                    active,
+                    spawn_form,
+                    detail_modal: None,
+                    approval_modal: None,
+                    content: ui::Content::Sandbox(ui::SandboxView {
+                        body: ui::BodyView {
+                            transcript: &tab.transcript,
+                            wrap: &mut tab.wrap,
+                            previews: &mut tab.previews,
+                            input: &tab.input,
+                            scroll: &mut tab.scroll,
+                            running_turn: false,
+                            quit_armed,
+                            close_confirm,
+                        },
+                        status: "sandbox".to_string(),
+                    }),
+                };
+            }
+        };
         let cost = estimate_cost(
             &tab.usage,
             &tab.model,
@@ -471,11 +653,17 @@ impl App {
             spawn_form,
             detail_modal,
             approval_modal,
-            session: ui::View {
-                transcript: &tab.transcript,
-                wrap: &mut tab.wrap,
-                previews: &mut tab.previews,
-                input: &tab.input,
+            content: ui::Content::Agent(ui::View {
+                body: ui::BodyView {
+                    transcript: &tab.transcript,
+                    wrap: &mut tab.wrap,
+                    previews: &mut tab.previews,
+                    input: &tab.input,
+                    scroll: &mut tab.scroll,
+                    running_turn: tab.running_turn,
+                    quit_armed,
+                    close_confirm,
+                },
                 root: &tab.root,
                 panel_visible: tab.panel_visible,
                 subagents: tab.roster.rows(),
@@ -484,8 +672,6 @@ impl App {
                 network_turn_requests: tab.panel.turn_requests,
                 skills: &tab.panel.skills,
                 agents_md: tab.agents_md.as_deref(),
-                scroll: &mut tab.scroll,
-                running_turn: tab.running_turn,
                 model: &tab.model,
                 provider: &tab.provider,
                 subagent_model: tab.subagent_model.as_deref(),
@@ -493,9 +679,7 @@ impl App {
                 cost,
                 context_split: tab.context_split,
                 panel_focus: tab.panel_focus,
-                quit_armed,
-                close_confirm,
-            },
+            }),
         }
     }
 
@@ -505,12 +689,18 @@ impl App {
     /// panel shows the whole session's tool activity, root and subagents together (§9.3), even
     /// though the transcript itself stays root-only (§9.9: subagent chatter never inlines).
     fn on_session_event(&mut self, event: SessionEvent) {
-        let Some(idx) = self.tabs.iter().position(|t| t.id == event.session) else {
+        let Some(idx) = self
+            .tabs
+            .iter()
+            .position(|t| t.as_agent().is_some_and(|a| a.id == event.session))
+        else {
             return;
         };
         self.dirty = true;
         let is_active = idx == self.active;
-        let tab = &mut self.tabs[idx];
+        let Some(tab) = self.agent_at_mut(idx) else {
+            return;
+        };
 
         // Every event kind that isn't root-only (§9.9): the panel — network/documents logs and
         // the subagent roster alike — shows the whole session's activity, root and subagents
@@ -663,8 +853,8 @@ impl App {
         let alt = key.modifiers.contains(KeyModifiers::ALT);
 
         if ctrl && matches!(key.code, KeyCode::Char('c' | 'C')) {
-            if self.tabs[self.active].running_turn {
-                let _ = self.tabs[self.active].handle.send(SessionCmd::Cancel).await;
+            if let Some(tab) = self.active_agent().filter(|t| t.running_turn) {
+                let _ = tab.handle.send(SessionCmd::Cancel).await;
             } else if self.quit_armed {
                 self.should_quit = true;
             } else {
@@ -681,9 +871,9 @@ impl App {
         self.close_confirm = false;
 
         if ctrl && matches!(key.code, KeyCode::Char('o' | 'O')) {
-            self.tabs[self.active]
-                .transcript
-                .toggle_last_tool_expanded();
+            if let Some(tab) = self.active_agent_mut() {
+                tab.transcript.toggle_last_tool_expanded();
+            }
             return;
         }
 
@@ -700,8 +890,9 @@ impl App {
         }
 
         if ctrl && matches!(key.code, KeyCode::Char('b' | 'B')) {
-            let visible = &mut self.tabs[self.active].panel_visible;
-            *visible = !*visible;
+            if let Some(tab) = self.active_agent_mut() {
+                tab.panel_visible = !tab.panel_visible;
+            }
             return;
         }
 
@@ -730,9 +921,18 @@ impl App {
             return;
         }
 
+        // Everything below is agent-only (approvals, the detail modal, panel focus, and the
+        // prompt): a sandbox tab has none of that state, so its keys stop here.
+        let Some(tab) = self.active_agent() else {
+            return;
+        };
+        let has_approval = !tab.pending_approvals.is_empty();
+        let has_detail_modal = tab.detail_modal.is_some();
+        let has_panel_focus = tab.panel_focus.is_some();
+
         // `M13-2`: an open approval request takes priority over everything below — including
         // the detail modal and panel focus — since a decision blocks the calling tool's turn.
-        if !self.tabs[self.active].pending_approvals.is_empty() {
+        if has_approval {
             self.handle_approval_key(key).await;
             return;
         }
@@ -740,18 +940,23 @@ impl App {
         // `M12-9`: the modal takes priority when open, then panel focus — a printable key with
         // no panel-specific meaning clears focus and falls through to the input box below,
         // rather than being swallowed, so the character the user typed still lands (§9.12).
-        if self.tabs[self.active].detail_modal.is_some() {
-            if matches!(key.code, KeyCode::Esc | KeyCode::Enter) {
-                self.tabs[self.active].detail_modal = None;
+        if has_detail_modal {
+            if matches!(key.code, KeyCode::Esc | KeyCode::Enter)
+                && let Some(tab) = self.active_agent_mut()
+            {
+                tab.detail_modal = None;
             }
             return;
         }
 
-        if self.tabs[self.active].panel_focus.is_some() && self.handle_panel_key(key).await {
+        if has_panel_focus && self.handle_panel_key(key).await {
             return;
         }
 
-        if let Some(prompt) = self.tabs[self.active].input.on_key(key) {
+        let Some(tab) = self.active_agent_mut() else {
+            return;
+        };
+        if let Some(prompt) = tab.input.on_key(key) {
             // `M13-3`: parsed and fully dispatched before anything below ever considers sending
             // a turn — an unknown command still never reaches the model (its own `Unknown` arm
             // just prints feedback), and a known command never falls through to `SessionCmd::
@@ -763,17 +968,16 @@ impl App {
             // §5.2: one turn at a time — a prompt sent while another is in flight is dropped
             // by the session task anyway, so don't even send it, and keep the draft the user
             // typed instead of losing it.
-            if !self.tabs[self.active].running_turn {
-                self.tabs[self.active].transcript.push_user(prompt.clone());
-                self.tabs[self.active].running_turn = true;
-                self.tabs[self.active].panel.reset_turn();
+            if let Some(tab) = self.active_agent_mut()
+                && !tab.running_turn
+            {
+                tab.transcript.push_user(prompt.clone());
+                tab.running_turn = true;
+                tab.panel.reset_turn();
                 if let Some(title) = task_title(&prompt) {
-                    self.tabs[self.active].title = title;
+                    tab.title = title;
                 }
-                let _ = self.tabs[self.active]
-                    .handle
-                    .send(SessionCmd::Prompt(prompt))
-                    .await;
+                let _ = tab.handle.send(SessionCmd::Prompt(prompt)).await;
             }
         }
     }
@@ -783,7 +987,9 @@ impl App {
     /// right above it. Focusing also makes sure the panel is actually visible; focusing a
     /// hidden panel would be pointless.
     fn toggle_panel_focus(&mut self) {
-        let tab = &mut self.tabs[self.active];
+        let Some(tab) = self.active_agent_mut() else {
+            return;
+        };
         if tab.panel_focus.is_some() {
             tab.panel_focus = None;
         } else {
@@ -799,7 +1005,9 @@ impl App {
     /// `crate::panel_widgets` renders against — so `↑`/`↓` can't walk focus past what's on
     /// screen.
     fn panel_row_count(&self, idx: usize, widget: PanelWidgetKind) -> usize {
-        let tab = &self.tabs[idx];
+        let Some(tab) = self.agent_at(idx) else {
+            return 0;
+        };
         match widget {
             PanelWidgetKind::Subagents => tab.roster.len().min(crate::roster::ROSTER_SHOWN),
             PanelWidgetKind::Network => tab.panel.network.len().min(6),
@@ -814,42 +1022,54 @@ impl App {
     /// is left for the caller to hand to the input box instead, so the keystroke isn't lost.
     async fn handle_panel_key(&mut self, key: KeyEvent) -> bool {
         let idx = self.active;
-        let Some(focus) = self.tabs[idx].panel_focus else {
+        let Some(focus) = self.agent_at(idx).and_then(|t| t.panel_focus) else {
             return false;
         };
 
         match key.code {
             KeyCode::Esc => {
-                self.tabs[idx].panel_focus = None;
+                self.set_panel_focus(idx, None);
                 true
             }
             KeyCode::Tab => {
-                self.tabs[idx].panel_focus = Some(PanelFocus {
-                    widget: focus.widget.next(),
-                    row: 0,
-                });
+                self.set_panel_focus(
+                    idx,
+                    Some(PanelFocus {
+                        widget: focus.widget.next(),
+                        row: 0,
+                    }),
+                );
                 true
             }
             KeyCode::BackTab => {
-                self.tabs[idx].panel_focus = Some(PanelFocus {
-                    widget: focus.widget.prev(),
-                    row: 0,
-                });
+                self.set_panel_focus(
+                    idx,
+                    Some(PanelFocus {
+                        widget: focus.widget.prev(),
+                        row: 0,
+                    }),
+                );
                 true
             }
             KeyCode::Up if focus.widget.is_list() => {
-                self.tabs[idx].panel_focus = Some(PanelFocus {
-                    widget: focus.widget,
-                    row: focus.row.saturating_sub(1),
-                });
+                self.set_panel_focus(
+                    idx,
+                    Some(PanelFocus {
+                        widget: focus.widget,
+                        row: focus.row.saturating_sub(1),
+                    }),
+                );
                 true
             }
             KeyCode::Down if focus.widget.is_list() => {
                 let max = self.panel_row_count(idx, focus.widget).saturating_sub(1);
-                self.tabs[idx].panel_focus = Some(PanelFocus {
-                    widget: focus.widget,
-                    row: (focus.row + 1).min(max),
-                });
+                self.set_panel_focus(
+                    idx,
+                    Some(PanelFocus {
+                        widget: focus.widget,
+                        row: (focus.row + 1).min(max),
+                    }),
+                );
                 true
             }
             KeyCode::Enter => {
@@ -863,10 +1083,16 @@ impl App {
             KeyCode::Char(_) => {
                 // §9.12: any other printable key returns focus to the input and is inserted
                 // there — never routed anywhere near a subagent (§7.6).
-                self.tabs[idx].panel_focus = None;
+                self.set_panel_focus(idx, None);
                 false
             }
             _ => true,
+        }
+    }
+
+    fn set_panel_focus(&mut self, idx: usize, focus: Option<PanelFocus>) {
+        if let Some(tab) = self.agent_at_mut(idx) {
+            tab.panel_focus = focus;
         }
     }
 
@@ -874,18 +1100,20 @@ impl App {
     /// read-only [`DetailModal`] built from that row's already-known fields — never a live
     /// re-fetch.
     fn activate_panel_focus(&mut self, idx: usize, focus: PanelFocus) {
+        let Some(tab) = self.agent_at_mut(idx) else {
+            return;
+        };
         match focus.widget {
             PanelWidgetKind::Model | PanelWidgetKind::AgentsMd => {}
             PanelWidgetKind::Context => {
-                let split = &mut self.tabs[idx].context_split;
-                *split = !*split;
+                tab.context_split = !tab.context_split;
             }
             PanelWidgetKind::Subagents => {
-                let Some(row) = self.tabs[idx].roster.rows().get(focus.row) else {
+                let Some(row) = tab.roster.rows().get(focus.row) else {
                     return;
                 };
                 let elapsed = row.started.elapsed().as_secs();
-                self.tabs[idx].detail_modal = Some(DetailModal {
+                tab.detail_modal = Some(DetailModal {
                     title: format!("subagent · {}", row.label),
                     lines: vec![
                         format!("status: {:?}", row.status),
@@ -896,7 +1124,7 @@ impl App {
                 });
             }
             PanelWidgetKind::Network => {
-                let Some(row) = self.tabs[idx].panel.network.get(focus.row) else {
+                let Some(row) = tab.panel.network.get(focus.row) else {
                     return;
                 };
                 let mut lines = vec![format!("host: {}", row.host), format!("path: {}", row.path)];
@@ -911,16 +1139,16 @@ impl App {
                         lines.push(format!("duration: {}ms", row.ms));
                     }
                 }
-                self.tabs[idx].detail_modal = Some(DetailModal {
+                tab.detail_modal = Some(DetailModal {
                     title: "request".to_string(),
                     lines,
                 });
             }
             PanelWidgetKind::Documents => {
-                let Some(row) = self.tabs[idx].panel.documents.get(focus.row) else {
+                let Some(row) = tab.panel.documents.get(focus.row) else {
                     return;
                 };
-                self.tabs[idx].detail_modal = Some(DetailModal {
+                tab.detail_modal = Some(DetailModal {
                     title: "document".to_string(),
                     lines: vec![
                         format!("path: {}", row.path.display()),
@@ -930,10 +1158,10 @@ impl App {
                 });
             }
             PanelWidgetKind::Skills => {
-                let Some(row) = self.tabs[idx].panel.skills.get(focus.row) else {
+                let Some(row) = tab.panel.skills.get(focus.row) else {
                     return;
                 };
-                self.tabs[idx].detail_modal = Some(DetailModal {
+                tab.detail_modal = Some(DetailModal {
                     title: format!("skill · {}", row.name),
                     lines: vec![
                         format!(
@@ -950,18 +1178,13 @@ impl App {
     /// `x` on a focused subagent row (`M12-9`): routed through `SessionCmd::CancelSubagent`,
     /// never `Cancel` — this must stop only that one subagent, not the root turn.
     async fn cancel_focused_subagent(&mut self, idx: usize, focus: PanelFocus) {
-        let Some(id) = self.tabs[idx]
-            .roster
-            .rows()
-            .get(focus.row)
-            .map(|row| row.id)
-        else {
+        let Some(tab) = self.agent_at(idx) else {
             return;
         };
-        let _ = self.tabs[idx]
-            .handle
-            .send(SessionCmd::CancelSubagent(id))
-            .await;
+        let Some(id) = tab.roster.rows().get(focus.row).map(|row| row.id) else {
+            return;
+        };
+        let _ = tab.handle.send(SessionCmd::CancelSubagent(id)).await;
     }
 
     /// `↑`/`↓`/`Enter` on the front of the active tab's approval queue (`M13-2`, `M13-6`):
@@ -975,15 +1198,20 @@ impl App {
         let n = ApprovalOption::ALL.len();
         match key.code {
             KeyCode::Up => {
-                let selected = &mut self.tabs[idx].approval_selection;
-                *selected = (*selected + n - 1) % n;
+                if let Some(tab) = self.agent_at_mut(idx) {
+                    tab.approval_selection = (tab.approval_selection + n - 1) % n;
+                }
             }
             KeyCode::Down => {
-                let selected = &mut self.tabs[idx].approval_selection;
-                *selected = (*selected + 1) % n;
+                if let Some(tab) = self.agent_at_mut(idx) {
+                    tab.approval_selection = (tab.approval_selection + 1) % n;
+                }
             }
             KeyCode::Enter => {
-                let option = ApprovalOption::ALL[self.tabs[idx].approval_selection];
+                let Some(tab) = self.agent_at(idx) else {
+                    return;
+                };
+                let option = ApprovalOption::ALL[tab.approval_selection];
                 self.resolve_approval(idx, option).await;
             }
             KeyCode::Esc => {
@@ -1000,16 +1228,19 @@ impl App {
     /// to `0` so the next queued request (if any) opens on `Allow`, not whatever was
     /// highlighted for this one.
     async fn resolve_approval(&mut self, idx: usize, option: ApprovalOption) {
-        let Some(approval) = self.tabs[idx].pending_approvals.pop_front() else {
+        let Some(tab) = self.agent_at_mut(idx) else {
             return;
         };
-        self.tabs[idx].approval_selection = 0;
+        let Some(approval) = tab.pending_approvals.pop_front() else {
+            return;
+        };
+        tab.approval_selection = 0;
         let (granted, remember) = match option {
             ApprovalOption::Allow => (true, None),
             ApprovalOption::Disallow => (false, None),
             ApprovalOption::AlwaysAllow => (true, allow_dir(approval.path.as_deref())),
         };
-        let _ = self.tabs[idx]
+        let _ = tab
             .handle
             .send(SessionCmd::Approve {
                 id: approval.id,
@@ -1022,9 +1253,8 @@ impl App {
     /// Appends one line of local command feedback to the active tab (`M13-3`) — never sent to
     /// the model, and rendered distinctly from `SystemError` (§ `Entry::System`'s own doc).
     fn push_system(&mut self, text: impl Into<String>) {
-        let tab = &mut self.tabs[self.active];
-        if let Some(evicted) = tab.transcript.push_system(text.into()) {
-            tab.wrap.invalidate(evicted);
+        if let Some(tab) = self.tabs.get_mut(self.active) {
+            tab.push_system(text.into());
         }
     }
 
@@ -1035,7 +1265,11 @@ impl App {
         match command {
             SlashCommand::New(dir) => self.spawn_tab_from_command(dir).await,
             SlashCommand::Close => self.request_close_active().await,
-            SlashCommand::Rename(Some(name)) => self.tabs[self.active].title = name,
+            SlashCommand::Rename(Some(name)) => {
+                if let Some(tab) = self.tabs.get_mut(self.active) {
+                    tab.set_title(name);
+                }
+            }
             SlashCommand::Rename(None) => self.push_system("usage: /rename <name>"),
             SlashCommand::Model(arg) => self.show_or_set_model(arg),
             SlashCommand::Provider(arg) => self.show_or_set_provider(arg),
@@ -1082,7 +1316,7 @@ impl App {
                 let provider = self.defaults.provider_label();
                 let subagent_model = self.defaults.subagent_model_label();
                 let may_delegate = self.defaults.delegation.enabled;
-                self.tabs.push(SessionTab::new(
+                self.tabs.push(Tab::Agent(SessionTab::new(
                     handle.id,
                     handle,
                     title,
@@ -1094,7 +1328,7 @@ impl App {
                     may_delegate,
                     skills,
                     agents_md,
-                ));
+                )));
                 let new_idx = self.tabs.len() - 1;
                 self.switch_to(new_idx);
             }
@@ -1109,7 +1343,9 @@ impl App {
     fn show_or_set_model(&mut self, arg: Option<String>) {
         match arg {
             None => {
-                let model = self.tabs[self.active].model.clone();
+                let Some(model) = self.active_agent().map(|t| t.model.clone()) else {
+                    return;
+                };
                 self.push_system(format!("model: {model} (this tab)"));
             }
             Some(model) => {
@@ -1124,7 +1360,9 @@ impl App {
     fn show_or_set_provider(&mut self, arg: Option<String>) {
         match arg {
             None => {
-                let provider = self.tabs[self.active].provider.clone();
+                let Some(provider) = self.active_agent().map(|t| t.provider.clone()) else {
+                    return;
+                };
                 self.push_system(format!("provider: {provider} (this tab)"));
             }
             Some(provider) => {
@@ -1140,7 +1378,9 @@ impl App {
     /// `SessionTab::http_enabled`/`may_delegate` rather than `SessionDefaults` — a tab's own
     /// toolset can diverge from the defaults it was spawned from (the spawn form's http toggle).
     fn show_tools(&mut self) {
-        let tab = &self.tabs[self.active];
+        let Some(tab) = self.active_agent() else {
+            return;
+        };
         let mut names = vec!["read_file", "list_dir", "find_files"];
         if tab.http_enabled {
             names.push("http_request");
@@ -1157,7 +1397,9 @@ impl App {
     fn show_or_set_http(&mut self, arg: Option<String>) {
         match arg {
             None => {
-                let enabled = self.tabs[self.active].http_enabled;
+                let Some(enabled) = self.active_agent().map(|t| t.http_enabled) else {
+                    return;
+                };
                 self.push_system(format!(
                     "http: {} (this tab)",
                     if enabled { "on" } else { "off" }
@@ -1185,7 +1427,9 @@ impl App {
     /// `/tokens` (`M13-3`): the same sent/received/cost figures the bottom status bar and
     /// `CONTEXT` widget already show, as one line the user can keep in their scrollback.
     fn show_tokens(&mut self) {
-        let tab = &self.tabs[self.active];
+        let Some(tab) = self.active_agent() else {
+            return;
+        };
         let cost = estimate_cost(
             &tab.usage,
             &tab.model,
@@ -1209,11 +1453,9 @@ impl App {
     /// `Transcript`/`WrapCache` is simpler and just as correct as evicting entry by entry, since
     /// nothing outside this tab holds a reference to either.
     fn clear_active_transcript(&mut self) {
-        let tab = &mut self.tabs[self.active];
-        tab.transcript = Transcript::new();
-        tab.wrap = WrapCache::new();
-        tab.previews = PreviewCache::new();
-        tab.scroll = 0;
+        if let Some(tab) = self.tabs.get_mut(self.active) {
+            tab.clear();
+        }
     }
 
     async fn handle_spawn_form_key(&mut self, key: KeyEvent) {
@@ -1293,7 +1535,7 @@ impl App {
                 let provider = defaults.provider_label();
                 let subagent_model = defaults.subagent_model_label();
                 let may_delegate = defaults.delegation.enabled;
-                self.tabs.push(SessionTab::new(
+                self.tabs.push(Tab::Agent(SessionTab::new(
                     handle.id,
                     handle,
                     title,
@@ -1305,7 +1547,7 @@ impl App {
                     may_delegate,
                     skills,
                     agents_md,
-                ));
+                )));
                 let new_idx = self.tabs.len() - 1;
                 self.switch_to(new_idx);
             }
@@ -1321,7 +1563,7 @@ impl App {
     /// `Ctrl+W` (`M8-3`): closes outright if the active tab is idle, otherwise arms a
     /// confirmation — a second `Ctrl+W` (or any other key disarms it, same as `quit_armed`).
     async fn request_close_active(&mut self) {
-        let running = self.tabs[self.active].running_turn;
+        let running = self.active_agent().is_some_and(|t| t.running_turn);
         if running && !self.close_confirm {
             self.close_confirm = true;
             return;
@@ -1331,8 +1573,9 @@ impl App {
     }
 
     async fn close_tab(&mut self, idx: usize) {
-        let tab = self.tabs.remove(idx);
-        self.manager.close(tab.id).await;
+        if let Tab::Agent(tab) = self.tabs.remove(idx) {
+            self.manager.close(tab.id).await;
+        }
         if self.tabs.is_empty() {
             self.should_quit = true;
             return;
@@ -1349,8 +1592,7 @@ impl App {
             return;
         }
         self.active = idx;
-        self.tabs[idx].unread = false;
-        self.tabs[idx].needs_attention = false;
+        self.tabs[idx].clear_markers();
         self.dirty = true;
     }
 
@@ -1363,7 +1605,7 @@ impl App {
         }
         (1..len)
             .map(|d| (self.active + d) % len)
-            .find(|&i| self.tabs[i].unread || self.tabs[i].needs_attention)
+            .find(|&i| self.tabs[i].is_flagged())
     }
 
     async fn on_term_event(&mut self, event: Event) {
@@ -1384,20 +1626,25 @@ impl App {
         if self.tabs.is_empty() || self.spawn_form.is_some() {
             return;
         }
-        let tab = &mut self.tabs[self.active];
-        let modal_has_focus = tab.detail_modal.is_some()
-            || tab.panel_focus.is_some()
-            || !tab.pending_approvals.is_empty();
-        if modal_has_focus {
-            return;
-        }
+        let scroll = match &mut self.tabs[self.active] {
+            Tab::Agent(tab) => {
+                let modal_has_focus = tab.detail_modal.is_some()
+                    || tab.panel_focus.is_some()
+                    || !tab.pending_approvals.is_empty();
+                if modal_has_focus {
+                    return;
+                }
+                &mut tab.scroll
+            }
+            Tab::Sandbox(tab) => &mut tab.scroll,
+        };
         match mouse.kind {
             MouseEventKind::ScrollUp => {
-                tab.scroll = tab.scroll.saturating_add(SCROLL_STEP);
+                *scroll = scroll.saturating_add(SCROLL_STEP);
                 self.dirty = true;
             }
             MouseEventKind::ScrollDown => {
-                tab.scroll = tab.scroll.saturating_sub(SCROLL_STEP);
+                *scroll = scroll.saturating_sub(SCROLL_STEP);
                 self.dirty = true;
             }
             _ => {}
@@ -1466,7 +1713,7 @@ fn restore_terminal() {
 async fn drive(mut app: App, terminal: &mut ratatui::DefaultTerminal) -> Result<(), TuiError> {
     let result = run_loop(&mut app, terminal).await;
     restore_terminal();
-    for tab in &app.tabs {
+    for tab in app.tabs.iter().filter_map(Tab::as_agent) {
         let _ = tab.handle.send(SessionCmd::Shutdown).await;
     }
     result

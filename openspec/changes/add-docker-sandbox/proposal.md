@@ -17,7 +17,8 @@ detaches, container restarts, and `mate` relaunches.
   the container's host config, a persistent sandbox-session store, startup
   reconciliation against Docker, and an inspection report builder.
 - A **sandbox session** is a long-lived container created from a configurable
-  image (default `ghcr.io/leoborai/dkc:latest`), named `dkc-<short-id>`,
+  image (default: the embedded sandbox image, built on first use and tagged
+  `mate-sandbox:<hash12>`), named `dkc-<short-id>`,
   labelled `managed-by=mate` + `session-id=<id>`, kept alive with a no-op
   command, mounting the chosen host workspace read-write at `/workspace` and a
   per-session named volume `dkc-claude-<id>` for Claude Code's state.
@@ -47,9 +48,18 @@ detaches, container restarts, and `mate` relaunches.
   must reach Anthropic). There is no runtime network toggle.
 - Containers are left running when `mate` exits. Stop and remove are explicit
   user actions; removing the session's volume is a separate, confirmed step.
-- **Image contract** (outside this repo): the image must ship `tmux` and a
-  non-root user with a writable home. This change documents the contract and
-  checks for it; it does not modify the image.
+- **Embedded sandbox image**: a `Dockerfile` and `tmux.conf` live in
+  `crates/mate-sandbox/image/` and are embedded in the `mate` binary
+  (`include_str!`). The image is Debian slim with `tmux` (status bar off),
+  Node, Claude Code, and a non-root user that owns `~/.claude`. On first use
+  the Docker API builds it from an in-memory tar context, showing build
+  progress in the TUI. The tag is content-hashed (`mate-sandbox:<hash12>`), so
+  a changed Dockerfile builds a new image and an unchanged one is reused. No
+  registry publishing is involved.
+- **Image override and contract**: the `[sandbox] image` setting overrides the
+  embedded image. An overridden image must meet the same contract (`tmux`, a
+  non-root user, a user-owned `~/.claude`); create checks it and names what is
+  missing.
 
 ## Capabilities
 
@@ -69,14 +79,16 @@ None. No main specs exist yet under `openspec/specs/`.
 - **New crate** `crates/mate-sandbox` and a new external dependency
   (`bollard`, the Docker Engine API client), plus `uuid` as a direct
   dependency (Claude Code's `--session-id` takes a UUID; the workspace
-  otherwise uses `ulid`).
+  otherwise uses `ulid`), plus `tar` (build context) and a SHA-256 crate if the
+  workspace has none (image tag). New files: `crates/mate-sandbox/image/Dockerfile`
+  and `crates/mate-sandbox/image/tmux.conf`.
 - **`mate-tui`**: `App.tabs` changes from `Vec<SessionTab>` to a two-variant
   tab enum; a second event receiver for sandbox events joins the `select!`
   loop; the terminal is handed off to and back from the attach routine; new
   slash commands; the spawn form gains a kind toggle.
 - **`mate-cli`**: `tui.rs` loads the sandbox store, starts reconciliation, and
   passes the sandbox event channel into `mate_tui::run`; config gains a
-  `[sandbox]` section (image, default limits).
+  `[sandbox]` section (optional image override, default limits).
 - **Persistence**: a new `sandboxes.json` under `mate`'s state directory
   (`$XDG_STATE_HOME/mate`).
 - **Host requirements**: a reachable Docker daemon (respecting `DOCKER_HOST`).

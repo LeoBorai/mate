@@ -19,6 +19,9 @@ behavior contract. Current state that shapes the approach:
 - State lives under `mate-cli/src/logging.rs::state_dir()`
   (`$XDG_STATE_HOME/mate` or `~/.local/state/mate`).
 - IDs elsewhere are `ulid`; Claude Code's `--session-id` needs a UUID.
+- No sandbox image is controlled by this repo, and the image previously assumed
+  (`ghcr.io/leoborai/dkc`) has no `tmux`. This change therefore ships its own
+  image as embedded files (D14).
 - `bollard` is not in `Cargo.lock` or the local registry. This repo forbids
   running `cargo`, so its API must be checked by reading its source in
   `~/.cargo/registry/src/` after the user fetches it.
@@ -36,8 +39,9 @@ behavior contract. Current state that shapes the approach:
 - Non-Unix hosts for interactive attach (raw fd handling is Unix-only).
   `/attach` on other platforms reports "unsupported". Everything else is
   platform-neutral.
-- Modifying the `dkc` image. This change states the image contract and
-  checks it at create time.
+- Publishing the sandbox image to a registry. The image is built locally from
+  embedded files (D14); an override image must meet the same contract, which
+  create checks.
 - Observing which hosts a container contacted or which files it read.
 - Runtime network changes.
 
@@ -51,7 +55,8 @@ cli --> tui --> core --> rig
          +--> mate-sandbox --> bollard
 ```
 
-Modules: `docker` (bollard wrapper + `DockerApi` trait), `policy`
+Modules: `image` (embedded Dockerfile and `tmux.conf`, content-hash tag, tar
+build context), `docker` (bollard wrapper + `DockerApi` trait), `policy`
 (`SandboxPolicy`, `policy_to_host_config`), `session` (`SandboxSession`,
 `SandboxStatus`), `store` (JSON persistence), `reconcile`, `claude` (command
 builders + headless JSON parsing), `report` (`SessionReport`), `error`
@@ -63,8 +68,9 @@ no use for it.
 
 ### D2. `DockerApi` trait over a `BollardDocker` impl
 
-The trait has only the operations the spec needs: ensure image (streaming
-progress), create/start/stop/remove container, remove volume, inspect image,
+The trait has only the operations the spec needs: ensure image (pull or
+build, streaming progress), build image from a tar context (D14),
+create/start/stop/remove container, remove volume, inspect image,
 inspect container, list by label, create/start/resize/inspect exec, one-shot
 stats, changes, and top. `reconcile` and the action layer take
 `&dyn DockerApi` (or a generic), so unit tests use an in-memory fake.
@@ -131,6 +137,9 @@ otherwise the volume is root-owned and unwritable. Create checks this by
 running `test -w "$CLAUDE_CONFIG_DIR"` in a one-shot exec after start, and
 reports a contract violation clearly if it fails.
 
+The embedded image (D14) satisfies this contract by construction. The same
+probe guards a configured override image, which is where a violation can occur.
+
 Env is `CLAUDE_CONFIG_DIR` only. No API key is ever set (login is
 interactive).
 
@@ -170,8 +179,9 @@ id.
 has no API to re-attach to or kill an exec, so detach would either orphan a
 running Claude Code or lose an in-progress turn.
 
-The image's tmux config is expected to set `status off` so the screen looks
-like plain Claude Code. This is part of the image contract, not checked.
+The embedded image's `tmux.conf` sets `status off` so the screen looks like
+plain Claude Code. An override image is expected to do the same; this is part
+of the image contract but is not checked.
 
 ### D8. Terminal hand-off
 
@@ -293,6 +303,36 @@ dropping the value inside the builder, so the value never reaches the view
 model. The view renders two titled blocks, "Configured (docker inspect)" and
 "Observed (stats / changes / top)", plus the container-layer caveat line.
 
+### D14. Embedded sandbox image
+
+Files `crates/mate-sandbox/image/Dockerfile` and `tmux.conf` are embedded with
+`include_str!` (inside the crate, so they ship with `cargo package`). The
+Dockerfile:
+- starts from `debian:bookworm-slim`;
+- installs `tmux`, `git`, `ca-certificates`, `curl`, and Node;
+- installs Claude Code globally with `npm`;
+- creates a non-root user with a home directory and a `~/.claude` it owns;
+- copies `tmux.conf` (`set -g status off`) to the system tmux config path;
+- sets `USER` to that user and `WORKDIR /workspace`.
+
+The `image` module exposes the file contents, the tag, and the build context.
+The tag is `mate-sandbox:` plus the first 12 hex characters of a SHA-256 over
+the Dockerfile and `tmux.conf` bytes. The context is an in-memory tar archive
+holding both files, built with the `tar` crate.
+
+`ensure_image(reference)`:
+- if the reference is the embedded tag, inspect the image; when it is absent,
+  call `build_image` with the tar context and stream progress to the caller;
+- otherwise (a configured override), keep the pull behaviour from before.
+
+`[sandbox] image`, when set, replaces the embedded tag entirely. Build errors
+(the stream's error entries and non-zero daemon responses) become
+`SandboxError::Docker { op: "build_image", .. }` carrying the failing build
+step's message, so the TUI can show it.
+
+*Alternative:* embed a `docker save` tarball. Rejected: hundreds of MB in the
+binary, and a rebuild of `mate` for every Claude Code update.
+
 ## Risks / Trade-offs
 
 - [bollard API drift from memory] → Read the fetched source for every call.
@@ -304,9 +344,20 @@ model. The view renders two titled blocks, "Configured (docker inspect)" and
   lost. This is acceptable and documented.
 - [Non-blocking stdin left set after a crash] → Drop guard plus chained panic
   hook (D8). A `SIGKILL` cannot be handled; documented in `sandbox.md`.
-- [The image does not meet the contract (no tmux, no user-owned
+- [An override image does not meet the contract (no tmux, no user-owned
   `~/.claude`)] → A create-time probe reports exactly which part is missing.
-  The container is left in place so the user can inspect it.
+  The container is left in place so the user can inspect it. The embedded image
+  meets the contract by construction.
+- [The first build needs network access and takes minutes (apt, npm)] →
+  Progress is shown in the tab. A failed build shows the failing step and
+  creates nothing.
+- [Claude Code's version floats until the embedded files change, and Docker's
+  layer cache can hide a newer release] → The tag reflects only the embedded
+  files. Users who want a newer Claude Code build their own image or override.
+  Pinning a version in the Dockerfile is a possible follow-up.
+- [Docker image build via the API is less exercised than `docker build`] →
+  The integration test covers it, and its types are read from the fetched
+  bollard source.
 - [The transcript-existence probe depends on Claude Code's on-disk layout] →
   Used only to choose `--resume` or `--session-id`. If the layout changes,
   the worst case is "No conversation found" on resume, shown as an error.
@@ -329,7 +380,9 @@ TUI wiring. Leftover containers and volumes are found by the
 
 - The exact bollard version is the latest stable release when the dependency
   is added. This does not change the design.
+- The exact bollard build types and the `tar` API are read from the fetched
+  sources before the code is written.
 - Whether the image's Claude Code supports `--session-id` is checked with
-  `claude --help` in the image. If it is missing, the fallback is reading
+  `claude --help` in the built embedded image. If it is missing, the fallback is reading
   `session_id` from the first headless or interactive run, which only affects
   D7 and D9 internals.

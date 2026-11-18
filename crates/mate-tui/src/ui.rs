@@ -57,7 +57,10 @@ pub(crate) struct TabSummary {
     pub(crate) needs_attention: bool,
 }
 
-pub(crate) struct View<'a> {
+/// The transcript-plus-input body every tab kind shares: what [`draw_body`] renders. Split out of
+/// [`View`] so a sandbox tab, which has no model/usage/panel state, can reuse the same
+/// renderers without carrying agent-only fields.
+pub(crate) struct BodyView<'a> {
     pub(crate) transcript: &'a Transcript,
     pub(crate) wrap: &'a mut WrapCache,
     /// `write_file` diff previews (§ write_file diff) — a sibling cache to `wrap`, only ever
@@ -70,14 +73,30 @@ pub(crate) struct View<'a> {
     /// clamp stick for the next frame instead of re-derailing every draw.
     pub(crate) scroll: &'a mut usize,
     pub(crate) running_turn: bool,
+    pub(crate) quit_armed: bool,
+    pub(crate) close_confirm: bool,
+}
+
+/// A sandbox tab's frame: the shared body plus one status line (state, image, and so on).
+pub(crate) struct SandboxView<'a> {
+    pub(crate) body: BodyView<'a>,
+    pub(crate) status: String,
+}
+
+/// What the active tab renders as — an agent tab's full view, or a sandbox tab's.
+pub(crate) enum Content<'a> {
+    Agent(View<'a>),
+    Sandbox(SandboxView<'a>),
+}
+
+pub(crate) struct View<'a> {
+    pub(crate) body: BodyView<'a>,
     pub(crate) model: &'a str,
     pub(crate) provider: &'a str,
     pub(crate) subagent_model: Option<&'a str>,
     pub(crate) usage: &'a UsageRollup,
     pub(crate) cost: CostEstimate,
     pub(crate) context_split: bool,
-    pub(crate) quit_armed: bool,
-    pub(crate) close_confirm: bool,
     /// Workspace root the documents log (§9.8) renders paths relative to.
     pub(crate) root: &'a Path,
     /// `Ctrl+B` (§9.12) — whether this tab's panel is shown at all, independent of whether the
@@ -143,7 +162,7 @@ pub(crate) struct ApprovalModalView<'a> {
 pub(crate) struct AppView<'a> {
     pub(crate) tabs: Vec<TabSummary>,
     pub(crate) active: usize,
-    pub(crate) session: View<'a>,
+    pub(crate) content: Content<'a>,
     pub(crate) spawn_form: Option<SpawnFormView<'a>>,
     pub(crate) detail_modal: Option<DetailModalView<'a>>,
     pub(crate) approval_modal: Option<ApprovalModalView<'a>>,
@@ -162,17 +181,25 @@ pub(crate) fn draw(f: &mut Frame<'_>, view: &mut AppView<'_>) {
     // §9.1: the panel is inside the tab body, to the left, never a global sidebar — wrapping
     // the existing vertical split (`draw_body`) in an outer horizontal one, rather than
     // touching that split itself.
-    match panel_width(body_area.width, view.session.panel_visible) {
-        0 => draw_body(f, body_area, &mut view.session),
-        cols => {
-            let [panel_area, main_area] =
-                Layout::horizontal([Constraint::Length(cols), Constraint::Min(0)]).areas(body_area);
-            render_panel(f, panel_area, &view.session);
-            draw_body(f, main_area, &mut view.session);
+    match &mut view.content {
+        Content::Agent(session) => {
+            match panel_width(body_area.width, session.panel_visible) {
+                0 => draw_body(f, body_area, &mut session.body),
+                cols => {
+                    let [panel_area, main_area] =
+                        Layout::horizontal([Constraint::Length(cols), Constraint::Min(0)])
+                            .areas(body_area);
+                    render_panel(f, panel_area, session);
+                    draw_body(f, main_area, &mut session.body);
+                }
+            }
+            render_status_bar(f, status_area, session);
+        }
+        Content::Sandbox(sandbox) => {
+            draw_body(f, body_area, &mut sandbox.body);
+            render_sandbox_status_bar(f, status_area, &sandbox.status);
         }
     }
-
-    render_status_bar(f, status_area, &view.session);
     if let Some(form) = &view.spawn_form {
         render_spawn_form(f, area, form);
     }
@@ -313,7 +340,7 @@ fn panel_width(body_width: u16, visible: bool) -> u16 {
     candidate.clamp(PANEL_MIN_COLS, PANEL_MAX_COLS)
 }
 
-fn draw_body(f: &mut Frame<'_>, area: Rect, view: &mut View<'_>) {
+fn draw_body(f: &mut Frame<'_>, area: Rect, view: &mut BodyView<'_>) {
     let input_height = input_height(view);
     let [transcript_area, input_area] =
         Layout::vertical([Constraint::Min(0), Constraint::Length(input_height)]).areas(area);
@@ -743,7 +770,7 @@ fn render_status_bar(f: &mut Frame<'_>, area: Rect, view: &View<'_>) {
     let style = Style::default().bg(Color::DarkGray).fg(Color::White);
     let sent = view.usage.root.input_tokens + view.usage.subagents.input_tokens;
     let recv = view.usage.root.output_tokens + view.usage.subagents.output_tokens;
-    let streaming = if view.running_turn { "⣾ " } else { "" };
+    let streaming = if view.body.running_turn { "⣾ " } else { "" };
     let cost = if view.cost.known {
         format!("~${:.2}", view.cost.total_usd)
     } else {
@@ -756,6 +783,12 @@ fn render_status_bar(f: &mut Frame<'_>, area: Rect, view: &View<'_>) {
     f.render_widget(Paragraph::new(line).style(style), area);
 }
 
+/// A sandbox tab's one-line status bar, in the same style as [`render_status_bar`].
+fn render_sandbox_status_bar(f: &mut Frame<'_>, area: Rect, status: &str) {
+    let style = Style::default().bg(Color::DarkGray).fg(Color::White);
+    f.render_widget(Paragraph::new(format!(" {status}")).style(style), area);
+}
+
 /// The side panel (`Ctrl+B`, §9.1): delegates to [`AgentStatusPanel`] (`M12-1`'s five-widget
 /// stack, its own vertical-budget allocation, and per-widget focus/navigation).
 fn render_panel(f: &mut Frame<'_>, area: Rect, view: &View<'_>) {
@@ -766,7 +799,7 @@ fn render_panel(f: &mut Frame<'_>, area: Rect, view: &View<'_>) {
         usage: view.usage,
         cost: view.cost,
         context_split: view.context_split,
-        running_turn: view.running_turn,
+        running_turn: view.body.running_turn,
         subagents: view.subagents,
         network: view.network,
         documents: view.documents,
@@ -779,12 +812,12 @@ fn render_panel(f: &mut Frame<'_>, area: Rect, view: &View<'_>) {
     AgentStatusPanel::new().render(f, area, &panel_view);
 }
 
-fn input_height(view: &View<'_>) -> u16 {
+fn input_height(view: &BodyView<'_>) -> u16 {
     let lines = view.input.textarea().lines().len() as u16;
     (lines + 2).clamp(MIN_INPUT_HEIGHT, MAX_INPUT_HEIGHT)
 }
 
-fn render_input(f: &mut Frame<'_>, area: Rect, view: &View<'_>) {
+fn render_input(f: &mut Frame<'_>, area: Rect, view: &BodyView<'_>) {
     let title = if view.close_confirm {
         " mate · Ctrl+W again to close (streaming) "
     } else if view.quit_armed {
@@ -800,7 +833,7 @@ fn render_input(f: &mut Frame<'_>, area: Rect, view: &View<'_>) {
     f.render_widget(view.input.textarea(), inner);
 }
 
-fn render_transcript(f: &mut Frame<'_>, area: Rect, view: &mut View<'_>) {
+fn render_transcript(f: &mut Frame<'_>, area: Rect, view: &mut BodyView<'_>) {
     let width = area.width.saturating_sub(PREFIX_WIDTH + 1);
     let requested = *view.scroll;
     let need = area.height as usize + requested;
