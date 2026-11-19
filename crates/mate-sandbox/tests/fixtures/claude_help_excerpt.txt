@@ -1,0 +1,8 @@
+  -r, --resume [value]                  Resume a conversation by session ID or
+                                        name, or open interactive picker with
+                                        optional search term
+  --safe-mode                           Start with all customizations
+  --session-id <uuid>                   Use a specific session ID for the
+                                        conversation (must be a valid UUID)
+  --setting-sources <sources>           Comma-separated list of setting sources
+                                        to load (user, project, local).

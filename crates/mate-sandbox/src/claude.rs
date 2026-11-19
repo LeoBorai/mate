@@ -274,4 +274,31 @@ mod tests {
             "login failures tell the user to attach and log in, got {err:?}"
         );
     }
+    const FIXTURE_SUCCESS: &str = include_str!("../tests/fixtures/claude_p_success.json");
+    const FIXTURE_NOT_LOGGED_IN: &str = include_str!("../tests/fixtures/claude_p_not_logged_in.json");
+
+    #[test]
+    fn captured_success_output_parses() {
+        let r = parse_headless(FIXTURE_SUCCESS, "", Some(0)).unwrap();
+        assert_eq!(r.result, "ok", "the captured turn's result text");
+        assert!(r.session_id.is_some(), "the captured output carries a UUID session id");
+    }
+
+    #[test]
+    fn captured_not_logged_in_output_maps_to_the_attach_message() {
+        let err = parse_headless(FIXTURE_NOT_LOGGED_IN, "", Some(1)).unwrap_err();
+        assert!(
+            matches!(&err, SandboxError::Headless { exit_code: Some(1), detail, .. } if detail == NOT_LOGGED_IN),
+            "the real logged-out output tells the user to attach and log in, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn captured_not_logged_in_output_is_an_error_even_with_exit_zero() {
+        let err = parse_headless(FIXTURE_NOT_LOGGED_IN, "", Some(0)).unwrap_err();
+        assert!(
+            matches!(&err, SandboxError::Headless { detail, .. } if detail == NOT_LOGGED_IN),
+            "is_error: true is a failure whatever the exit code, got {err:?}"
+        );
+    }
 }

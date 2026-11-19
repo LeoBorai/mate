@@ -41,7 +41,7 @@ source in `~/.cargo/registry/src/`.
 ## 6. Claude command building and headless parsing
 
 - [x] 6.1 Add pure builders for the interactive tmux command (D7) and the headless command (D9), choosing `--session-id` or `--resume` from inputs (stored id, transcript exists). Verify: unit tests for all three D7 cases and both headless cases.
-- [ ] 6.2 Add pure `parse_headless(stdout, stderr, exit_code)` (D9). Verify: unit tests using the fixtures from 1.1 cover success, `is_error: true`, non-zero exit, malformed JSON (error carries stderr), and the not-logged-in mapping.
+- [x] 6.2 Add pure `parse_headless(stdout, stderr, exit_code)` (D9). Verify: unit tests using the fixtures from 1.1 cover success, `is_error: true`, non-zero exit, malformed JSON (error carries stderr), and the not-logged-in mapping.
 - [x] 6.3 Add `run_headless` (tmux liveness refusal, exec with `tty false`, demultiplexed capture with 1 MiB caps, `inspect_exec`, parse, persist the new `session_id`). Verify: a unit test with the fake refuses when `has-session` reports alive. The happy path is covered by the integration test in 9.1.
 
 ## 7. Inspection report
