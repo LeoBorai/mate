@@ -43,7 +43,7 @@ use mate_core::cost::{ModelRate, estimate_cost};
 use mate_core::session::{SessionCmd, SessionEvent, SessionHandle, SessionId, SessionManager};
 use mate_core::streaming::{AgentEvent, UsageRollup};
 use mate_sandbox::attach::AttachOutcome;
-use mate_sandbox::docker::{stop_owned, verify_ownership};
+use mate_sandbox::docker::{remove_owned, stop_owned, verify_ownership};
 use mate_sandbox::headless::run_headless;
 use mate_sandbox::session::{SandboxSession, SandboxStatus};
 use mate_tool_api::{AgentId, DiffLine, SkillMetadata, ToolActivity};
@@ -274,8 +274,33 @@ impl SessionTab {
 /// A sandbox tab's view state: the same transcript, wrap cache, input, and scroll an agent tab
 /// has, but none of its agent-only state (model, usage, panel, approvals). `state` is what the
 /// last reconcile or action reported; `busy` is true while a headless turn is in flight.
+/// The two questions `/rm` asks in turn: the container first, then, separately, the state
+/// volume (which holds the Claude login and transcripts).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SandboxConfirm {
+    Remove,
+    RemoveVolume,
+}
+
+/// The tab-bar label of a sandbox tab: `sbx:<name>` plus a glyph for its status, so a sandbox
+/// is told apart from an agent tab and a stopped or lost one is visible without opening it.
+fn sandbox_tab_label(title: &str, state: SandboxState) -> String {
+    let glyph = match state {
+        SandboxState::Known(SandboxStatus::Running) => '●',
+        SandboxState::Known(SandboxStatus::Exited) => '○',
+        SandboxState::Known(SandboxStatus::Created) => '◐',
+        SandboxState::Checking => '…',
+        SandboxState::Known(SandboxStatus::Missing)
+        | SandboxState::Unreachable
+        | SandboxState::Failed => '✗',
+    };
+    format!("sbx:{title} {glyph}")
+}
+
 struct SandboxTab {
     session: SandboxSession,
+    /// The `/rm` question waiting for a `y` or `n` answer in the input box.
+    confirm: Option<SandboxConfirm>,
     title: String,
     state: SandboxState,
     /// The latest image pull or build progress line, cleared once the sandbox is created.
@@ -295,6 +320,7 @@ impl SandboxTab {
         Self {
             title: session.name.clone(),
             session,
+            confirm: None,
             state,
             progress: None,
             busy: false,
@@ -370,7 +396,7 @@ impl Tab {
                 needs_attention: t.needs_attention,
             },
             Tab::Sandbox(t) => ui::TabSummary {
-                title: t.title.clone(),
+                title: sandbox_tab_label(&t.title, t.state),
                 streaming: false,
                 unread: t.unread,
                 needs_attention: t.needs_attention,
@@ -560,6 +586,9 @@ pub struct App {
     /// Set by `/attach`; the terminal hand-off in the event loop takes it.
     #[allow(dead_code)]
     pending_attach: Option<uuid::Uuid>,
+    /// Sessions whose tab was closed this run. The container is untouched and the session stays
+    /// in the store, so it reappears on next launch.
+    hidden_sandboxes: Vec<SandboxSession>,
 }
 
 impl App {
@@ -612,6 +641,7 @@ impl App {
             },
             sandbox_events,
             pending_attach: None,
+            hidden_sandboxes: Vec::new(),
         }
     }
 
@@ -1408,7 +1438,7 @@ impl App {
             SlashCommand::Inspect => self.sandbox_command_pending("/inspect"),
             SlashCommand::Stop => self.sandbox_set_running(false),
             SlashCommand::Start => self.sandbox_set_running(true),
-            SlashCommand::Remove => self.sandbox_command_pending("/rm"),
+            SlashCommand::Remove => self.sandbox_remove(),
             SlashCommand::Unknown(name) => self.push_system(format!("unknown command: /{name}")),
         }
     }
@@ -1704,8 +1734,10 @@ impl App {
     }
 
     async fn close_tab(&mut self, idx: usize) {
-        if let Tab::Agent(tab) = self.remove_tab_at(idx) {
-            self.manager.close(tab.id).await;
+        match self.remove_tab_at(idx) {
+            Tab::Agent(tab) => self.manager.close(tab.id).await,
+            // Hide only: no Docker call, and the session stays stored for the next launch.
+            Tab::Sandbox(tab) => self.hidden_sandboxes.push(tab.session),
         }
     }
 
@@ -1732,11 +1764,95 @@ impl App {
         let Some(prompt) = tab.input.on_key(key) else {
             return;
         };
+        if tab.confirm.is_some() {
+            self.answer_sandbox_confirm(&prompt);
+            return;
+        }
         if let Some(command) = crate::slash::parse(&prompt) {
             self.handle_slash_command(command).await;
             return;
         }
         self.start_headless(prompt);
+    }
+
+    /// `/rm`: asks whether to remove the container. Nothing is removed until both questions
+    /// are answered (see [`Self::answer_sandbox_confirm`]).
+    fn sandbox_remove(&mut self) {
+        let Some(tab) = self.active_sandbox_mut() else {
+            self.push_system(ONLY_SANDBOX);
+            return;
+        };
+        if tab.busy {
+            tab.note("a turn is running: wait for it before removing the sandbox");
+            return;
+        }
+        tab.confirm = Some(SandboxConfirm::Remove);
+        let name = tab.session.name.clone();
+        tab.note(format!(
+            "remove container {name}? answer y to continue, anything else cancels"
+        ));
+    }
+
+    /// The answer to a pending `/rm` question, typed into the input box. Only `y`/`yes` confirm;
+    /// declining the first question removes nothing, declining the second removes the container
+    /// but keeps the state volume.
+    fn answer_sandbox_confirm(&mut self, answer: &str) {
+        let yes = matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes");
+        let Some(tab) = self.active_sandbox_mut() else {
+            return;
+        };
+        let Some(step) = tab.confirm.take() else {
+            return;
+        };
+        match (step, yes) {
+            (SandboxConfirm::Remove, false) => tab.note("removal cancelled"),
+            (SandboxConfirm::Remove, true) => {
+                tab.confirm = Some(SandboxConfirm::RemoveVolume);
+                let volume = SandboxSession::volume_name(&tab.session.id);
+                tab.note(format!(
+                    "also delete state volume {volume}? this deletes the Claude login and all \
+                     conversation transcripts for this sandbox. answer y to delete it, anything \
+                     else keeps it"
+                ));
+            }
+            (SandboxConfirm::RemoveVolume, with_volume) => self.remove_sandbox(with_volume),
+        }
+    }
+
+    /// Removes the active sandbox's container (unless Docker already lost it) and, when asked,
+    /// its state volume, then reports [`SandboxEvent::Removed`] so the tab closes and the store
+    /// forgets it.
+    fn remove_sandbox(&mut self, with_volume: bool) {
+        let Some(docker) = self.sandbox.docker.clone() else {
+            self.push_system(SandboxState::Unreachable.label());
+            return;
+        };
+        let Some(tab) = self.active_sandbox() else {
+            return;
+        };
+        let session = tab.session.clone();
+        let container_gone = tab.state == SandboxState::Known(SandboxStatus::Missing);
+        let tx = self.sandbox.tx.clone();
+        tokio::spawn(async move {
+            let docker = &*docker;
+            let mut result = Ok(());
+            if !container_gone {
+                result = remove_owned(docker, &session.container_id, &session.id).await;
+            }
+            if result.is_ok() && with_volume {
+                result = docker
+                    .remove_volume(&SandboxSession::volume_name(&session.id))
+                    .await;
+            }
+            let event = match result {
+                Ok(()) => SandboxEvent::Removed { id: session.id },
+                Err(err) => SandboxEvent::Error {
+                    id: session.id,
+                    message: err.to_string(),
+                },
+            };
+            let _ = tx.send(event).await;
+        });
     }
 
     /// Plain text on a sandbox tab: one headless Claude Code turn in the container. Refused
@@ -1861,6 +1977,7 @@ impl App {
                 Tab::Sandbox(t) => Some(t.session.clone()),
                 Tab::Agent(_) => None,
             })
+            .chain(self.hidden_sandboxes.iter().cloned())
             .collect();
         if let Err(err) = store.save(&sessions) {
             tracing::warn!(error = %err, "failed to save sandbox sessions");
@@ -3635,6 +3752,118 @@ mod tests {
             sandbox_notes(&app)[0].contains("/start"),
             "the refusal points at /start, got {:?}",
             sandbox_notes(&app)
+        );
+    }
+
+    #[tokio::test]
+    async fn declining_the_first_rm_question_removes_nothing() {
+        let (mut app, fake) = running_sandbox_app(Default::default(), None);
+        submit(&mut app, "/rm").await;
+        submit(&mut app, "n").await;
+        assert!(
+            sandbox_notes(&app).last().unwrap().contains("cancelled"),
+            "declining reports the cancellation, got {:?}",
+            sandbox_notes(&app)
+        );
+        assert!(sandbox_tab(&app, 1).confirm.is_none(), "no question is left pending");
+        assert!(fake.calls().is_empty(), "no Docker call follows a declined removal");
+    }
+
+    #[tokio::test]
+    async fn the_volume_question_is_separate_and_warns_about_the_login() {
+        let (mut app, fake) = running_sandbox_app(Default::default(), None);
+        submit(&mut app, "/rm").await;
+        submit(&mut app, "y").await;
+        assert_eq!(
+            sandbox_tab(&app, 1).confirm,
+            Some(SandboxConfirm::RemoveVolume),
+            "confirming the container asks about the volume next"
+        );
+        let last = sandbox_notes(&app).last().unwrap().clone();
+        assert!(
+            last.contains("login") && last.contains("transcripts"),
+            "the volume question warns what it deletes, got {last:?}"
+        );
+        assert!(fake.calls().is_empty(), "nothing is removed before both questions are answered");
+    }
+
+    #[tokio::test]
+    async fn declining_the_volume_question_removes_the_container_and_keeps_the_volume() {
+        let (mut app, fake) = running_sandbox_app(Default::default(), None);
+        submit(&mut app, "/rm").await;
+        submit(&mut app, "y").await;
+        submit(&mut app, "n").await;
+        let event = app.sandbox_events.recv().await.unwrap();
+        app.on_sandbox_event(event);
+        assert_eq!(app.tabs.len(), 1, "the sandbox tab closes once removed");
+        let calls = fake.calls();
+        assert!(
+            calls.contains(&"remove container-1".to_string()),
+            "the container is removed, got {calls:?}"
+        );
+        assert!(
+            !calls.iter().any(|c| c.starts_with("remove_volume")),
+            "the volume is kept, got {calls:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn confirming_both_questions_removes_the_container_and_its_volume() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = mate_sandbox::store::SandboxStore::new(dir.path());
+        let (mut app, fake) = running_sandbox_app(Default::default(), Some(store.clone()));
+        submit(&mut app, "/rm").await;
+        submit(&mut app, "yes").await;
+        submit(&mut app, "y").await;
+        let event = app.sandbox_events.recv().await.unwrap();
+        app.on_sandbox_event(event);
+        let calls = fake.calls();
+        let volume = format!(
+            "remove_volume {}",
+            SandboxSession::volume_name(&uuid::Uuid::from_u128(1))
+        );
+        assert!(
+            calls.contains(&"remove container-1".to_string()) && calls.contains(&volume),
+            "both the container and its volume are removed, got {calls:?}"
+        );
+        assert!(
+            store.load().unwrap().is_empty(),
+            "the removed session is deleted from the store"
+        );
+    }
+
+    #[test]
+    fn a_sandbox_tab_is_labelled_with_its_name_and_a_status_glyph() {
+        assert_eq!(
+            sandbox_tab_label("api", SandboxState::Known(SandboxStatus::Running)),
+            "sbx:api ●",
+            "a running sandbox shows the filled glyph"
+        );
+        assert_eq!(
+            sandbox_tab_label("api", SandboxState::Known(SandboxStatus::Exited)),
+            "sbx:api ○",
+            "a stopped sandbox shows the hollow glyph"
+        );
+        assert_eq!(
+            sandbox_tab_label("api", SandboxState::Unreachable),
+            "sbx:api ✗",
+            "an unreachable daemon shows the error glyph"
+        );
+    }
+
+    #[tokio::test]
+    async fn ctrl_w_on_a_sandbox_tab_hides_it_without_touching_docker() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = mate_sandbox::store::SandboxStore::new(dir.path());
+        let (mut app, fake) = running_sandbox_app(Default::default(), Some(store.clone()));
+        app.on_key(ctrl_key('w')).await;
+        assert_eq!(app.tabs.len(), 1, "the sandbox tab is hidden");
+        assert!(fake.calls().is_empty(), "closing a tab makes no Docker call");
+        app.persist_sandboxes();
+        assert_eq!(
+            store.load().unwrap().len(),
+            1,
+            "a hidden sandbox stays in the store so it returns next launch"
         );
     }
 
