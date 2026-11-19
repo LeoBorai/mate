@@ -11,6 +11,7 @@ use mate_sandbox::attach::AttachOutcome;
 use mate_sandbox::claude::HeadlessResult;
 use mate_sandbox::docker::DockerApi;
 use mate_sandbox::error::SandboxError;
+use mate_sandbox::report::SessionReport;
 use mate_sandbox::session::{SandboxSession, SandboxStatus};
 use mate_sandbox::store::SandboxStore;
 use tokio::sync::mpsc;
@@ -43,6 +44,8 @@ pub enum SandboxEvent {
         id: Uuid,
         outcome: Result<AttachOutcome, SandboxError>,
     },
+    /// The inspection report for `/inspect`.
+    Report { id: Uuid, report: Box<SessionReport> },
     /// The sandbox was removed: closes its tab.
     Removed { id: Uuid },
     /// Any other action failed.
@@ -58,6 +61,7 @@ impl SandboxEvent {
             | Self::StatusChanged { id, .. }
             | Self::HeadlessDone { id, .. }
             | Self::AttachFinished { id, .. }
+            | Self::Report { id, .. }
             | Self::Removed { id }
             | Self::Error { id, .. } => *id,
             Self::Created { session } => session.id,

@@ -13,6 +13,7 @@ clap = { workspace = true }
 dunce = { workspace = true }
 figment = { workspace = true }
 mate-core = { workspace = true }
+mate-sandbox = { workspace = true }
 mate-tool-api = { workspace = true }
 mate-tool-http = { workspace = true }
 mate-tool-mcp = { workspace = true }

@@ -38,6 +38,7 @@ use crossterm::event::{
     DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEvent, KeyEventKind,
     KeyModifiers, MouseEvent, MouseEventKind,
 };
+use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
 use futures::StreamExt;
 use mate_core::cost::{ModelRate, estimate_cost};
 use mate_core::session::{SessionCmd, SessionEvent, SessionHandle, SessionId, SessionManager};
@@ -45,6 +46,7 @@ use mate_core::streaming::{AgentEvent, UsageRollup};
 use mate_sandbox::attach::AttachOutcome;
 use mate_sandbox::docker::{remove_owned, stop_owned, verify_ownership};
 use mate_sandbox::headless::run_headless;
+use mate_sandbox::report::inspect_session;
 use mate_sandbox::session::{SandboxSession, SandboxStatus};
 use mate_tool_api::{AgentId, DiffLine, SkillMetadata, ToolActivity};
 use std::collections::{HashMap, VecDeque};
@@ -301,6 +303,8 @@ struct SandboxTab {
     session: SandboxSession,
     /// The `/rm` question waiting for a `y` or `n` answer in the input box.
     confirm: Option<SandboxConfirm>,
+    /// The open `/inspect` report; `Esc`/`Enter` close it.
+    report: Option<DetailModal>,
     title: String,
     state: SandboxState,
     /// The latest image pull or build progress line, cleared once the sandbox is created.
@@ -321,6 +325,7 @@ impl SandboxTab {
             title: session.name.clone(),
             session,
             confirm: None,
+            report: None,
             state,
             progress: None,
             busy: false,
@@ -742,11 +747,15 @@ impl App {
                 // Computed before the borrows below: `status_line` needs the whole tab.
                 let status = tab.status_line();
                 let busy = tab.busy;
+                let report = tab.report.as_ref().map(|m| ui::DetailModalView {
+                    title: &m.title,
+                    lines: &m.lines,
+                });
                 return AppView {
                     tabs,
                     active,
                     spawn_form,
-                    detail_modal: None,
+                    detail_modal: report,
                     approval_modal: None,
                     content: ui::Content::Sandbox(ui::SandboxView {
                         body: ui::BodyView {
@@ -1435,7 +1444,7 @@ impl App {
             SlashCommand::Tokens => self.show_tokens(),
             SlashCommand::Quit => self.should_quit = true,
             SlashCommand::Attach => self.sandbox_attach(),
-            SlashCommand::Inspect => self.sandbox_command_pending("/inspect"),
+            SlashCommand::Inspect => self.sandbox_inspect(),
             SlashCommand::Stop => self.sandbox_set_running(false),
             SlashCommand::Start => self.sandbox_set_running(true),
             SlashCommand::Remove => self.sandbox_remove(),
@@ -1761,6 +1770,12 @@ impl App {
         let Some(tab) = self.active_sandbox_mut() else {
             return;
         };
+        if tab.report.is_some() {
+            if matches!(key.code, KeyCode::Esc | KeyCode::Enter) {
+                tab.report = None;
+            }
+            return;
+        }
         let Some(prompt) = tab.input.on_key(key) else {
             return;
         };
@@ -1773,6 +1788,87 @@ impl App {
             return;
         }
         self.start_headless(prompt);
+    }
+
+    /// The terminal hand-off for `/attach`: leaves the alternate screen (raw mode stays on, as
+    /// the exec needs it), runs the attach to completion, then re-enters the TUI and redraws.
+    /// The caller has already dropped its `EventStream`. A failure before the hand-off (the
+    /// ownership check, the transcript probe) is reported in the tab and the screen is never
+    /// left. Only terminal I/O errors propagate.
+    async fn attach(
+        &mut self,
+        id: uuid::Uuid,
+        terminal: &mut ratatui::DefaultTerminal,
+    ) -> Result<(), TuiError> {
+        let (Some(docker), Some(mut session)) = (
+            self.sandbox.docker.clone(),
+            self.tabs.iter().find_map(|t| match t {
+                Tab::Sandbox(t) if t.session.id == id => Some(t.session.clone()),
+                _ => None,
+            }),
+        ) else {
+            return Ok(());
+        };
+        let prepared = mate_sandbox::attach::prepare_attach(docker.as_ref(), &mut session).await;
+        let arg = match prepared {
+            Ok(arg) => arg,
+            Err(err) => {
+                self.on_sandbox_event(SandboxEvent::AttachFinished {
+                    id,
+                    outcome: Err(err),
+                });
+                return Ok(());
+            }
+        };
+        // A fresh Claude session id is stored before the exec, so it survives a crash.
+        if let Some(tab) = self.tabs.iter_mut().find_map(|t| match t {
+            Tab::Sandbox(t) if t.session.id == id => Some(t),
+            _ => None,
+        }) {
+            tab.session.claude_session_id = session.claude_session_id;
+        }
+        self.persist_sandboxes();
+
+        crossterm::execute!(
+            io::stdout(),
+            DisableMouseCapture,
+            LeaveAlternateScreen,
+            crossterm::cursor::Show
+        )?;
+        let outcome = mate_sandbox::attach::run(docker.as_ref(), &session, arg).await;
+        crossterm::execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
+        terminal.clear()?;
+        self.dirty = true;
+        self.on_sandbox_event(SandboxEvent::AttachFinished { id, outcome });
+        Ok(())
+    }
+
+    /// `/inspect`: fetches the report in a task; it arrives as [`SandboxEvent::Report`].
+    fn sandbox_inspect(&mut self) {
+        let Some(session) = self.active_sandbox().map(|t| t.session.clone()) else {
+            self.push_system(ONLY_SANDBOX);
+            return;
+        };
+        let Some(docker) = self.sandbox.docker.clone() else {
+            self.push_system(SandboxState::Unreachable.label());
+            return;
+        };
+        let tx = self.sandbox.tx.clone();
+        tokio::spawn(async move {
+            let event = match inspect_session(docker.as_ref(), &session.container_id, &session.id)
+                .await
+            {
+                Ok(report) => SandboxEvent::Report {
+                    id: session.id,
+                    report: Box::new(report),
+                },
+                Err(err) => SandboxEvent::Error {
+                    id: session.id,
+                    message: err.to_string(),
+                },
+            };
+            let _ = tx.send(event).await;
+        });
     }
 
     /// `/rm`: asks whether to remove the container. Nothing is removed until both questions
@@ -1955,16 +2051,6 @@ impl App {
         self.pending_attach = Some(tab.session.id);
     }
 
-    /// Placeholder for a sandbox command whose behavior is not wired yet: still rejected on an
-    /// agent tab like every sandbox command.
-    fn sandbox_command_pending(&mut self, name: &str) {
-        if self.active_sandbox().is_none() {
-            self.push_system(ONLY_SANDBOX);
-            return;
-        }
-        self.push_system(format!("{name} is not available yet"));
-    }
-
     /// Writes every sandbox tab's session to the store. A failure is logged, not fatal.
     fn persist_sandboxes(&self) {
         let Some(store) = &self.sandbox.store else {
@@ -2040,6 +2126,12 @@ impl App {
                 attention = true;
             }
             SandboxEvent::PullProgress { line, .. } => tab.progress = Some(line),
+            SandboxEvent::Report { report, .. } => {
+                tab.report = Some(DetailModal {
+                    title: format!("inspect {}", tab.session.name),
+                    lines: crate::report_view::report_lines(&report),
+                });
+            }
             SandboxEvent::HeadlessDone {
                 claude_session_id,
                 result,
@@ -2307,6 +2399,14 @@ async fn run_loop(app: &mut App, terminal: &mut ratatui::DefaultTerminal) -> Res
     loop {
         if app.should_quit {
             break;
+        }
+        if let Some(id) = app.pending_attach.take() {
+            // Crossterm must stop reading stdin before the exec takes it over; a fresh stream
+            // starts reading again afterwards.
+            drop(term_events);
+            app.attach(id, terminal).await?;
+            term_events = EventStream::new();
+            tick.reset();
         }
         tokio::select! {
             biased;
@@ -3865,6 +3965,23 @@ mod tests {
             1,
             "a hidden sandbox stays in the store so it returns next launch"
         );
+    }
+
+    #[tokio::test]
+    async fn inspect_opens_a_report_modal_with_both_blocks_and_esc_closes_it() {
+        let (mut app, _fake) = running_sandbox_app(Default::default(), None);
+        submit(&mut app, "/inspect").await;
+        let event = app.sandbox_events.recv().await.unwrap();
+        app.on_sandbox_event(event);
+        let modal = sandbox_tab(&app, 1).report.as_ref().expect("report modal is open");
+        let text = modal.lines.join("\n");
+        assert!(
+            text.contains(crate::report_view::CONFIGURED_TITLE)
+                && text.contains(crate::report_view::OBSERVED_TITLE),
+            "the modal has both titled blocks, got {text}"
+        );
+        app.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)).await;
+        assert!(sandbox_tab(&app, 1).report.is_none(), "Esc closes the report");
     }
 
     #[tokio::test]

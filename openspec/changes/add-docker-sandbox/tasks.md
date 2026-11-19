@@ -62,14 +62,14 @@ source in `~/.cargo/registry/src/`.
 - [x] 9.3 Add slash commands `/attach`, `/inspect`, `/stop`, `/start`, and `/rm` to `slash::parse`, plus plain-text-as-headless on sandbox tabs. Verify: `slash.rs` parse tests, and `App` tests for "only valid on a sandbox tab" on agent tabs and the headless refusal message.
 - [x] 9.4 Add `/rm` two-step confirm (container, then a separate volume question warning about login and transcripts). Verify: `App` tests that declining at each step issues no removal and confirming issues the right calls on the fake.
 - [ ] 9.5 Add the spawn form kind toggle and sandbox fields (workspace, image prefilled, network with a warning on none), plus pull and build progress rendering. Verify: `App` tests for form validation (bad directory refused, no container call) and that the none-network warning appears.
-- [ ] 9.6 Add the terminal hand-off in `run_loop` (D8: drop `EventStream`, leave alt screen, run attach, re-enter, new `EventStream`, redraw). Verify: manual run by the user (attach, `Ctrl-\`, TUI redraws correctly, keystrokes work immediately).
-- [ ] 9.7 Add the report modal with "Configured" and "Observed" blocks and the container-layer caveat. Verify: render tests on plain strings (the `ui.rs` convention) assert both titles and the caveat text.
+- [x] 9.6 Add the terminal hand-off in `run_loop` (D8: drop `EventStream`, leave alt screen, run attach, re-enter, new `EventStream`, redraw). Verify: manual run by the user (attach, `Ctrl-\`, TUI redraws correctly, keystrokes work immediately).
+- [x] 9.7 Add the report modal with "Configured" and "Observed" blocks and the container-layer caveat. Verify: render tests on plain strings (the `ui.rs` convention) assert both titles and the caveat text.
 - [x] 9.8 Add the tab bar `sbx:<name>` label with status glyph, and make `Ctrl+W` hide-only on sandbox tabs. Verify: `tab_bar_segments` unit test, and an `App` test that `Ctrl+W` issues no Docker call.
 
 ## 10. CLI wiring and config
 
-- [ ] 10.1 Add a `[sandbox]` config section (optional `image` override, `memory`, `pids`, `cpus`) to `mate-cli`'s layered config. An unset `image` means the embedded image. Verify: config load tests for defaults (image unset) and file overrides, matching the existing `mcp` config tests.
-- [ ] 10.2 In `mate-cli/src/tui.rs`: build `BollardDocker` (a failure is not fatal), load `SandboxStore` from `state_dir()`, open the sandbox tabs, spawn reconcile, and pass the sandbox channel into `mate_tui::run` (and the onboarding path). Verify: the user runs `mate` with Docker stopped, and the TUI starts with sandbox tabs showing "Docker daemon unreachable".
+- [x] 10.1 Add a `[sandbox]` config section (optional `image` override, `memory`, `pids`, `cpus`) to `mate-cli`'s layered config. An unset `image` means the embedded image. Verify: config load tests for defaults (image unset) and file overrides, matching the existing `mcp` config tests.
+- [x] 10.2 In `mate-cli/src/tui.rs`: build `BollardDocker` (a failure is not fatal), load `SandboxStore` from `state_dir()`, open the sandbox tabs, spawn reconcile, and pass the sandbox channel into `mate_tui::run` (and the onboarding path). Verify: the user runs `mate` with Docker stopped, and the TUI starts with sandbox tabs showing "Docker daemon unreachable".
 - [ ] 10.3 Docs: add `.agents/docs/sandbox.md` (architecture, the embedded image and its build, tag and override, image contract, attach mechanics, secret handling, the OAuth-token-in-volume caveat, the containers-left-running-on-exit behavior), and update `architecture.md` (crate table and graph) and `config.md` (`[sandbox]`). Verify: the docs mention no out-of-band planning file, and the crate table lists `mate-sandbox`.
 
 ## 11. End-to-end acceptance

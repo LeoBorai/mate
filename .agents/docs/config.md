@@ -65,6 +65,25 @@ DOCS_API_KEY = "..."
   the agent's toolset at all — the same "absent unless enabled" shape
   `http_request`'s `[http].enabled` already follows.
 
+## Docker sandbox (`[sandbox]`)
+
+Defaults for new sandbox sessions (see `sandbox.md`). `SandboxConfig` lives in
+`mate-cli/src/config.rs`.
+
+```toml
+[sandbox]
+image = "example.com/my-sandbox:1"  # optional
+memory = 4294967296                 # bytes
+pids = 512
+cpus = 2.0
+```
+
+- `image` unset (the default) means the image embedded in `mate`. A set
+  `image` replaces it entirely and must meet the image contract in
+  `sandbox.md`.
+- `memory`, `pids`, and `cpus` default to `SandboxPolicy`'s defaults (4 GiB,
+  512, 2.0) and apply to every sandbox created afterwards.
+
 ## `API_TOKEN` is env-only
 
 With `API_TOKEN` unset, the TUI (never `--plain`/`--print`, which still fail fast) opens an

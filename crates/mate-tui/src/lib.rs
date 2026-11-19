@@ -11,6 +11,7 @@ mod input;
 mod onboarding;
 mod panel;
 mod panel_widgets;
+mod report_view;
 mod roster;
 mod sandbox;
 mod session_factory;

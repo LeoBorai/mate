@@ -16,6 +16,8 @@ use mate_core::cost::ModelRate;
 use mate_core::model_catalog::CatalogBackend;
 use mate_core::provider_error::ProviderError;
 use mate_core::session::SessionManager;
+use mate_sandbox::docker::{BollardDocker, DockerApi};
+use mate_sandbox::store::SandboxStore;
 use mate_tool_http::HttpShared;
 use mate_tool_mcp::McpServers;
 use mate_tui::{
@@ -40,7 +42,7 @@ pub async fn run(cli: &crate::cli::Cli, config: &Config) -> Result<(), MateError
                 started.sessions,
                 started.defaults,
                 started.pricing,
-                SandboxWiring::disabled(),
+                sandbox_wiring(),
             )
             .await
             .map_err(|err| MateError::Io(anyhow::anyhow!(err)))
@@ -68,9 +70,40 @@ async fn run_with_onboarding(cli: &crate::cli::Cli, config: &Config) -> Result<(
         })
     });
 
-    mate_tui::run_with_onboarding(PendingOnboarding { complete }, SandboxWiring::disabled())
+    mate_tui::run_with_onboarding(PendingOnboarding { complete }, sandbox_wiring())
         .await
         .map_err(|err| MateError::Io(anyhow::anyhow!(err)))
+}
+
+/// Builds the sandbox side of the TUI: a Docker client, the persisted sessions, and the store
+/// that saves them. Nothing here is fatal. Without a client the sandbox tabs report the daemon
+/// as unreachable (agent tabs are unaffected), and a store that cannot be read is left out so a
+/// damaged `sandboxes.json` is never overwritten. The tabs for the stored sessions open
+/// immediately and the TUI reconciles them against Docker in the background.
+fn sandbox_wiring() -> SandboxWiring {
+    let docker: Option<Arc<dyn DockerApi>> = match BollardDocker::connect() {
+        Ok(docker) => Some(Arc::new(docker)),
+        Err(err) => {
+            tracing::warn!(error = %err, "could not build a Docker client");
+            None
+        }
+    };
+    let store = match crate::logging::state_dir() {
+        Ok(dir) => Some(SandboxStore::new(dir)),
+        Err(err) => {
+            tracing::warn!(error = %err, "no state directory: sandbox sessions will not be saved");
+            None
+        }
+    };
+    let (store, sessions) = match store.map(|store| (store.load(), store)) {
+        Some((Ok(sessions), store)) => (Some(store), sessions),
+        Some((Err(err), _)) => {
+            tracing::warn!(error = %err, "could not read stored sandbox sessions");
+            (None, Vec::new())
+        }
+        None => (None, Vec::new()),
+    };
+    SandboxWiring::new(docker, store, sessions)
 }
 
 /// The one place a catalog backend becomes the CLI's `BackendKind` (see

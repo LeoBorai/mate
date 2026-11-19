@@ -157,13 +157,16 @@ impl DockerApi for FakeDocker {
         let (_, _, code) = self.scripted(exec_id);
         Ok(ExecInspectResponse { exit_code: Some(code), ..Default::default() })
     }
-    async fn stats_once(&self, _: &str) -> Result<ContainerStatsResponse, SandboxError> {
-        unsupported()
+    async fn stats_once(&self, id: &str) -> Result<ContainerStatsResponse, SandboxError> {
+        self.record(format!("stats {id}"))?;
+        Ok(ContainerStatsResponse::default())
     }
-    async fn changes(&self, _: &str) -> Result<Vec<FilesystemChange>, SandboxError> {
-        unsupported()
+    async fn changes(&self, id: &str) -> Result<Vec<FilesystemChange>, SandboxError> {
+        self.record(format!("changes {id}"))?;
+        Ok(Vec::new())
     }
-    async fn top(&self, _: &str) -> Result<ContainerTopResponse, SandboxError> {
-        unsupported()
+    async fn top(&self, id: &str) -> Result<ContainerTopResponse, SandboxError> {
+        self.record(format!("top {id}"))?;
+        Ok(ContainerTopResponse::default())
     }
 }

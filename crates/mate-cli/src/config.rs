@@ -93,6 +93,7 @@ pub struct Config {
     pub http: HttpPolicy,
     pub agents_md: AgentsMdConfig,
     pub mcp: McpConfig,
+    pub sandbox: SandboxConfig,
 }
 
 impl Default for Config {
@@ -125,6 +126,32 @@ impl Default for Config {
             http: HttpPolicy::default(),
             agents_md: AgentsMdConfig::default(),
             mcp: McpConfig::default(),
+            sandbox: SandboxConfig::default(),
+        }
+    }
+}
+
+/// Docker sandbox defaults (`[sandbox]`). An unset `image` means the image embedded in `mate`,
+/// built on first use; a set one replaces it entirely and must meet the same contract
+/// (`tmux`, a non-root user, a user-owned `~/.claude`). The limits apply to every new sandbox.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SandboxConfig {
+    pub image: Option<String>,
+    /// Memory limit in bytes.
+    pub memory: i64,
+    pub pids: i64,
+    /// Fractional CPUs.
+    pub cpus: f64,
+}
+
+impl Default for SandboxConfig {
+    fn default() -> Self {
+        Self {
+            image: None,
+            memory: mate_sandbox::policy::SandboxPolicy::DEFAULT_MEMORY,
+            pids: mate_sandbox::policy::SandboxPolicy::DEFAULT_PIDS,
+            cpus: mate_sandbox::policy::SandboxPolicy::DEFAULT_CPUS,
         }
     }
 }
@@ -507,6 +534,55 @@ mod tests {
             let config = load(&cli(&[])).unwrap();
             assert_eq!(config.agents_md.max_bytes, 4096);
             assert!(config.agents_md.enabled, "unset fields keep their default");
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn sandbox_defaults_use_the_embedded_image_and_policy_limits() {
+        Jail::expect_with(|jail| {
+            jail.clear_env();
+            let home = jail.directory().display().to_string();
+            jail.set_env("HOME", home);
+
+            let config = load(&cli(&[])).unwrap();
+            assert_eq!(config.sandbox.image, None, "unset image means the embedded image");
+            assert_eq!(
+                config.sandbox.memory,
+                mate_sandbox::policy::SandboxPolicy::DEFAULT_MEMORY,
+                "memory defaults to the policy default"
+            );
+            assert_eq!(config.sandbox.pids, 512, "pids default to 512");
+            assert_eq!(config.sandbox.cpus, 2.0, "cpus default to 2");
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn sandbox_settings_load_from_the_project_config_file() {
+        Jail::expect_with(|jail| {
+            jail.clear_env();
+            let home = jail.directory().display().to_string();
+            jail.set_env("HOME", home);
+            jail.create_file(
+                ".mate.toml",
+                r#"
+                [sandbox]
+                image = "example.com/my-sandbox:1"
+                memory = 1073741824
+                cpus = 1.5
+                "#,
+            )?;
+
+            let config = load(&cli(&[])).unwrap();
+            assert_eq!(
+                config.sandbox.image.as_deref(),
+                Some("example.com/my-sandbox:1"),
+                "the file's image overrides the embedded one"
+            );
+            assert_eq!(config.sandbox.memory, 1_073_741_824, "memory comes from the file");
+            assert_eq!(config.sandbox.cpus, 1.5, "cpus come from the file");
+            assert_eq!(config.sandbox.pids, 512, "unset fields keep their default");
             Ok(())
         });
     }
