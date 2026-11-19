@@ -37,7 +37,7 @@ use bollard::models::{
     VolumeCreateRequest,
 };
 use bollard::query_parameters::{
-    CreateContainerOptionsBuilder, CreateImageOptionsBuilder, ListContainersOptionsBuilder,
+    BuildImageOptionsBuilder, CreateContainerOptionsBuilder, CreateImageOptionsBuilder, ListContainersOptionsBuilder,
     RemoveContainerOptionsBuilder, StatsOptionsBuilder, StopContainerOptionsBuilder,
 };
 use futures::{Stream, StreamExt};
@@ -77,6 +77,14 @@ pub trait DockerApi: Send + Sync {
     async fn pull_image(
         &self,
         image: &str,
+        progress: &mut (dyn FnMut(String) + Send),
+    ) -> Result<(), SandboxError>;
+    /// Build `tag` from a tar `context` holding a `Dockerfile`, calling `progress` with each
+    /// output line. A failing build step is an `Err`, not just a log line.
+    async fn build_image(
+        &self,
+        tag: &str,
+        context: Vec<u8>,
         progress: &mut (dyn FnMut(String) + Send),
     ) -> Result<(), SandboxError>;
     async fn create_volume(&self, name: &str) -> Result<(), SandboxError>;
@@ -184,6 +192,38 @@ impl DockerApi for BollardDocker {
                     Some(id) => format!("{id}: {status}"),
                     None => status,
                 });
+            }
+        }
+        Ok(())
+    }
+
+    async fn build_image(
+        &self,
+        tag: &str,
+        context: Vec<u8>,
+        progress: &mut (dyn FnMut(String) + Send),
+    ) -> Result<(), SandboxError> {
+        let options = BuildImageOptionsBuilder::new()
+            .dockerfile("Dockerfile")
+            .t(tag)
+            .rm(true)
+            .build();
+        let body = bollard::body_full(bytes::Bytes::from(context));
+        let mut stream = Box::pin(self.docker.build_image(options, None, Some(body)));
+        while let Some(item) = stream.next().await {
+            let info = item.map_err(|e| map_error("build_image", e))?;
+            if let Some(detail) = info.error_detail {
+                return Err(SandboxError::Docker {
+                    op: "build_image",
+                    source: bollard::errors::Error::DockerResponseServerError {
+                        status_code: 500,
+                        message: detail.message.unwrap_or_else(|| "build failed".to_owned()),
+                    },
+                });
+            }
+            let text = info.stream.or(info.status).unwrap_or_default();
+            for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
+                progress(line.to_owned());
             }
         }
         Ok(())
@@ -463,7 +503,9 @@ pub async fn exec_collect(
     })
 }
 
-/// Make sure `image` exists locally, pulling it (with progress) if not.
+/// Make sure `image` exists locally. When absent, the current embedded image is built from its
+/// embedded files; any other reference (an override, an old embedded tag) is pulled. Progress
+/// lines go to `progress`. Nothing is created on failure.
 pub async fn ensure_image(
     docker: &dyn DockerApi,
     image: &str,
@@ -471,6 +513,13 @@ pub async fn ensure_image(
 ) -> Result<(), SandboxError> {
     match docker.inspect_image(image).await {
         Ok(_) => Ok(()),
+        Err(SandboxError::NotFound(_)) if crate::image::is_embedded_tag(image) => {
+            let context = crate::image::build_context().map_err(|e| SandboxError::Docker {
+                op: "build_image",
+                source: bollard::errors::Error::IOError { err: e },
+            })?;
+            docker.build_image(image, context, progress).await
+        }
         Err(SandboxError::NotFound(_)) => docker.pull_image(image, progress).await,
         Err(e) => Err(e),
     }
@@ -595,6 +644,67 @@ mod tests {
         assert!(
             fake.calls().contains(&"stop mine".to_owned()),
             "an owned container is stopped after the label check"
+        );
+    }
+
+    async fn ensure(fake: &FakeDocker, image: &str) -> Result<Vec<String>, SandboxError> {
+        let mut lines = Vec::new();
+        ensure_image(fake, image, &mut |l| lines.push(l)).await?;
+        Ok(lines)
+    }
+
+    #[tokio::test]
+    async fn the_embedded_image_is_built_when_absent() {
+        let fake = FakeDocker::default();
+        let tag = crate::image::embedded_tag();
+        let lines = ensure(&fake, &tag).await.unwrap();
+        assert!(
+            fake.calls().contains(&format!("build {tag}")),
+            "an absent embedded tag is built, got {:?}",
+            fake.calls()
+        );
+        assert!(
+            !fake.calls().iter().any(|c| c.starts_with("pull")),
+            "the embedded image is never pulled"
+        );
+        assert_eq!(lines, vec!["Step 1/1"], "build progress reaches the caller");
+    }
+
+    #[tokio::test]
+    async fn a_present_embedded_image_is_reused() {
+        let fake = FakeDocker::default();
+        let tag = crate::image::embedded_tag();
+        fake.images.lock().unwrap().insert(tag.clone());
+        ensure(&fake, &tag).await.unwrap();
+        assert!(
+            !fake.calls().iter().any(|c| c.starts_with("build") || c.starts_with("pull")),
+            "a present image is neither built nor pulled, got {:?}",
+            fake.calls()
+        );
+    }
+
+    #[tokio::test]
+    async fn an_override_image_is_pulled_never_built() {
+        let fake = FakeDocker::default();
+        ensure(&fake, "example.com/x:1").await.unwrap();
+        let calls = fake.calls();
+        assert!(calls.contains(&"pull example.com/x:1".to_owned()), "override is pulled: {calls:?}");
+        assert!(!calls.iter().any(|c| c.starts_with("build")), "override is never built");
+    }
+
+    #[tokio::test]
+    async fn a_build_error_surfaces_as_a_docker_error_and_creates_nothing() {
+        let fake = FakeDocker::default();
+        *fake.build_error.lock().unwrap() = Some("npm ERR! boom".into());
+        let err = ensure(&fake, &crate::image::embedded_tag()).await.unwrap_err();
+        assert!(
+            matches!(&err, SandboxError::Docker { op: "build_image", .. })
+                && err.to_string().contains("npm ERR! boom"),
+            "the failing step's message is carried, got {err}"
+        );
+        assert!(
+            !fake.calls().iter().any(|c| c.starts_with("create") || c.starts_with("start")),
+            "no container or volume is created after a failed build"
         );
     }
 }

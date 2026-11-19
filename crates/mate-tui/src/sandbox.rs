@@ -28,8 +28,12 @@ pub enum SandboxEvent {
     },
     /// A line of image pull or build progress.
     PullProgress { id: Uuid, line: String },
-    /// A freshly created sandbox: opens its tab.
+    /// A freshly created sandbox: fills in its tab (opened as `creating…` when the form was
+    /// submitted), or opens one.
     Created { session: SandboxSession },
+    /// Creating the sandbox failed before a container existed: closes its placeholder tab and
+    /// reopens the form with the reason.
+    CreateFailed { id: Uuid, message: String },
     /// Start or stop changed the container's status.
     StatusChanged { id: Uuid, status: SandboxStatus },
     /// A headless turn finished. `claude_session_id` is the session's id after the turn (set
@@ -63,6 +67,7 @@ impl SandboxEvent {
             | Self::AttachFinished { id, .. }
             | Self::Report { id, .. }
             | Self::Removed { id }
+            | Self::CreateFailed { id, .. }
             | Self::Error { id, .. } => *id,
             Self::Created { session } => session.id,
         }
@@ -73,6 +78,7 @@ impl SandboxEvent {
 /// built, which is not fatal), the session store, the stored sessions to open as tabs, and the
 /// event channel background tasks report on.
 pub struct SandboxWiring {
+    pub(crate) settings: SandboxSettings,
     pub(crate) docker: Option<Arc<dyn DockerApi>>,
     pub(crate) store: Option<SandboxStore>,
     pub(crate) sessions: Vec<SandboxSession>,
@@ -88,6 +94,7 @@ impl SandboxWiring {
     ) -> Self {
         let (tx, events) = mpsc::channel(EVENT_BUFFER);
         Self {
+            settings: SandboxSettings::default(),
             docker,
             store,
             sessions,
@@ -96,15 +103,44 @@ impl SandboxWiring {
         }
     }
 
+    /// Defaults for sandboxes created from the spawn form.
+    pub fn with_settings(mut self, settings: SandboxSettings) -> Self {
+        self.settings = settings;
+        self
+    }
+
     /// No sandboxes: no client, no store, no tabs.
     pub fn disabled() -> Self {
         Self::new(None, None, Vec::new())
     }
 }
 
+/// Defaults for new sandboxes: an optional image override (unset means the embedded image) and
+/// the resource limits.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SandboxSettings {
+    pub image: Option<String>,
+    /// Bytes.
+    pub memory: i64,
+    pub pids: i64,
+    pub cpus: f64,
+}
+
+impl Default for SandboxSettings {
+    fn default() -> Self {
+        Self {
+            image: None,
+            memory: mate_sandbox::policy::SandboxPolicy::DEFAULT_MEMORY,
+            pids: mate_sandbox::policy::SandboxPolicy::DEFAULT_PIDS,
+            cpus: mate_sandbox::policy::SandboxPolicy::DEFAULT_CPUS,
+        }
+    }
+}
+
 /// The handles an `App` keeps to start sandbox actions. Holding `tx` here also keeps the event
 /// channel open for the life of the app.
 pub(crate) struct SandboxCtx {
+    pub(crate) settings: SandboxSettings,
     pub(crate) docker: Option<Arc<dyn DockerApi>>,
     // Read once sandbox actions persist session changes.
     #[allow(dead_code)]
@@ -117,6 +153,8 @@ pub(crate) struct SandboxCtx {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SandboxState {
     Checking,
+    /// The form was submitted and the image, volume and container are being made.
+    Creating,
     Known(SandboxStatus),
     Unreachable,
     /// Asking Docker failed for some reason other than the daemon being unreachable.
@@ -127,6 +165,7 @@ impl SandboxState {
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Checking => "checking…",
+            Self::Creating => "creating…",
             Self::Known(SandboxStatus::Running) => "running",
             Self::Known(SandboxStatus::Exited) => "exited",
             Self::Known(SandboxStatus::Created) => "created",

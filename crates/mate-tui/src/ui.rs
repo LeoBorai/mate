@@ -20,7 +20,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
-use crate::app::{ApprovalOption, SpawnField};
+use crate::app::{ApprovalOption, SpawnField, SpawnKind};
 use crate::highlight::PreviewCache;
 use crate::input::InputBox;
 use crate::onboarding::{Onboarding, Step};
@@ -124,9 +124,14 @@ pub(crate) struct View<'a> {
 /// under the fields rather than replacing them — the user's half-typed directory shouldn't
 /// vanish just because it didn't resolve.
 pub(crate) struct SpawnFormView<'a> {
+    pub(crate) kind: SpawnKind,
     pub(crate) dir: &'a str,
     pub(crate) model: &'a str,
     pub(crate) http_enabled: bool,
+    pub(crate) image: &'a str,
+    pub(crate) network: &'a str,
+    /// Shown in yellow under the fields, e.g. the sandbox `none` network warning.
+    pub(crate) warning: Option<&'a str>,
     pub(crate) focus: SpawnField,
     pub(crate) error: Option<&'a str>,
 }
@@ -565,7 +570,9 @@ fn render_tab_bar(f: &mut Frame<'_>, area: Rect, tabs: &[TabSummary], active: us
 /// underneath a widget on its own and the transcript would otherwise show through.
 fn render_spawn_form(f: &mut Frame<'_>, area: Rect, form: &SpawnFormView<'_>) {
     let width = area.width.saturating_sub(4).clamp(20, 50);
-    let height = if form.error.is_some() { 6 } else { 5 };
+    let sandbox = form.kind == SpawnKind::Sandbox;
+    let rows = 4 + usize::from(form.warning.is_some()) + usize::from(form.error.is_some());
+    let height = rows as u16 + 2;
     let popup = centered_rect(width, height, area);
 
     f.render_widget(Clear, popup);
@@ -588,6 +595,11 @@ fn render_spawn_form(f: &mut Frame<'_>, area: Rect, form: &SpawnFormView<'_>) {
     };
     let mut lines = vec![
         field(
+            "kind",
+            if sandbox { "sandbox" } else { "agent" }.to_string(),
+            form.focus == SpawnField::Kind,
+        ),
+        field(
             "dir",
             if form.dir.is_empty() {
                 ".".to_string()
@@ -596,7 +608,20 @@ fn render_spawn_form(f: &mut Frame<'_>, area: Rect, form: &SpawnFormView<'_>) {
             },
             form.focus == SpawnField::Dir,
         ),
-        field(
+    ];
+    if sandbox {
+        lines.push(field("image", form.image.to_string(), form.focus == SpawnField::Image));
+        lines.push(field(
+            "network",
+            if form.network.is_empty() {
+                "bridge".to_string()
+            } else {
+                form.network.to_string()
+            },
+            form.focus == SpawnField::Network,
+        ));
+    } else {
+        lines.push(field(
             "model",
             if form.model.is_empty() {
                 "(default)".to_string()
@@ -604,13 +629,19 @@ fn render_spawn_form(f: &mut Frame<'_>, area: Rect, form: &SpawnFormView<'_>) {
                 form.model.to_string()
             },
             form.focus == SpawnField::Model,
-        ),
-        field(
+        ));
+        lines.push(field(
             "http",
             if form.http_enabled { "on" } else { "off" }.to_string(),
             form.focus == SpawnField::Http,
-        ),
-    ];
+        ));
+    }
+    if let Some(warning) = form.warning {
+        lines.push(Line::from(Span::styled(
+            warning.to_string(),
+            Style::default().fg(Color::Yellow),
+        )));
+    }
     if let Some(err) = form.error {
         lines.push(Line::from(Span::styled(
             err.to_string(),

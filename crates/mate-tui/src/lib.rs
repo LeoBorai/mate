@@ -22,6 +22,6 @@ mod ui;
 mod wrap;
 
 pub use app::{InitialSession, TuiError, run, run_with_onboarding};
-pub use sandbox::{SandboxEvent, SandboxWiring};
+pub use sandbox::{SandboxEvent, SandboxSettings, SandboxWiring};
 pub use onboarding::{CompleteOnboarding, PendingOnboarding, StartedSessions};
 pub use session_factory::{SessionDefaults, build_spec, build_tool_ctx};

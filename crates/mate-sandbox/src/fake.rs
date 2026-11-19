@@ -1,6 +1,6 @@
 //! In-memory [`DockerApi`] for tests, here and (via the `test-support` feature) in other crates.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
 use async_trait::async_trait;
@@ -19,6 +19,10 @@ pub struct FakeDocker {
     containers: Mutex<HashMap<String, ContainerInspectResponse>>,
     calls: Mutex<Vec<String>>,
     pub daemon_down: Mutex<bool>,
+    /// Image references that exist locally.
+    pub images: Mutex<HashSet<String>>,
+    /// When set, `build_image` fails with this message.
+    pub build_error: Mutex<Option<String>>,
     /// Scripted exec results keyed by the space-joined command:
     /// (stdout, stderr, exit code). Unscripted commands exit 1 silently.
     scripts: Mutex<HashMap<String, (String, String, i64)>>,
@@ -92,24 +96,62 @@ fn unsupported<T>() -> Result<T, SandboxError> {
 
 #[async_trait]
 impl DockerApi for FakeDocker {
-    async fn inspect_image(&self, _: &str) -> Result<ImageInspect, SandboxError> {
-        unsupported()
+    async fn inspect_image(&self, image: &str) -> Result<ImageInspect, SandboxError> {
+        self.record(format!("inspect_image {image}"))?;
+        if self.images.lock().unwrap().contains(image) {
+            Ok(ImageInspect::default())
+        } else {
+            Err(SandboxError::NotFound(image.to_owned()))
+        }
     }
     async fn pull_image(
         &self,
-        _: &str,
-        _: &mut (dyn FnMut(String) + Send),
+        image: &str,
+        progress: &mut (dyn FnMut(String) + Send),
     ) -> Result<(), SandboxError> {
-        unsupported()
+        self.record(format!("pull {image}"))?;
+        progress("pulled".to_owned());
+        self.images.lock().unwrap().insert(image.to_owned());
+        Ok(())
     }
-    async fn create_volume(&self, _: &str) -> Result<(), SandboxError> {
-        unsupported()
+    async fn build_image(
+        &self,
+        tag: &str,
+        _: Vec<u8>,
+        progress: &mut (dyn FnMut(String) + Send),
+    ) -> Result<(), SandboxError> {
+        self.record(format!("build {tag}"))?;
+        progress("Step 1/1".to_owned());
+        if let Some(message) = self.build_error.lock().unwrap().clone() {
+            return Err(SandboxError::Docker {
+                op: "build_image",
+                source: bollard::errors::Error::DockerResponseServerError {
+                    status_code: 500,
+                    message,
+                },
+            });
+        }
+        self.images.lock().unwrap().insert(tag.to_owned());
+        Ok(())
+    }
+    async fn create_volume(&self, name: &str) -> Result<(), SandboxError> {
+        self.record(format!("create_volume {name}"))
     }
     async fn remove_volume(&self, name: &str) -> Result<(), SandboxError> {
         self.record(format!("remove_volume {name}"))
     }
-    async fn create_container(&self, _: &str, _: ContainerCreateBody) -> Result<String, SandboxError> {
-        unsupported()
+    async fn create_container(
+        &self,
+        name: &str,
+        body: ContainerCreateBody,
+    ) -> Result<String, SandboxError> {
+        self.record(format!("create_container {name}"))?;
+        let labels: Vec<(String, String)> = body.labels.unwrap_or_default().into_iter().collect();
+        let labels: Vec<(&str, &str)> =
+            labels.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let id = format!("container-{name}");
+        self.add(&id, labelled_inspect(&labels, "running"));
+        Ok(id)
     }
     async fn start_container(&self, id: &str) -> Result<(), SandboxError> {
         self.record(format!("start {id}"))

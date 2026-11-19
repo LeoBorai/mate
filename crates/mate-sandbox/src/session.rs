@@ -64,7 +64,7 @@ pub(crate) mod tests {
             id,
             name: SandboxSession::container_name(&id),
             container_id: "abc123".into(),
-            image: "ghcr.io/leoborai/dkc:latest".into(),
+            image: crate::image::embedded_tag(),
             workspace: "/tmp/ws".into(),
             policy: SandboxPolicy::new("/tmp/ws"),
             claude_session_id: None,

@@ -87,3 +87,28 @@ async fn container_lifecycle_and_hardening() {
     remove_owned(&docker, &container, &id).await.unwrap();
     docker.remove_volume(&spec.volume).await.unwrap();
 }
+
+#[tokio::test]
+#[ignore = "needs a Docker daemon and network; set DKC_DOCKER_TESTS=1"]
+async fn the_embedded_image_builds() {
+    if std::env::var("DKC_DOCKER_TESTS").as_deref() != Ok("1") {
+        eprintln!("skipping: DKC_DOCKER_TESTS=1 not set");
+        return;
+    }
+    let Ok(docker) = BollardDocker::connect() else {
+        eprintln!("skipping: could not build a Docker client");
+        return;
+    };
+    if docker.list_managed_containers().await.is_err() {
+        eprintln!("skipping: Docker daemon unreachable");
+        return;
+    }
+    let tag = mate_sandbox::image::embedded_tag();
+    ensure_image(&docker, &tag, &mut |line| eprintln!("build: {line}"))
+        .await
+        .unwrap();
+    assert!(
+        docker.inspect_image(&tag).await.is_ok(),
+        "the embedded image exists under its content-hash tag after ensure_image"
+    );
+}

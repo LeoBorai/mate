@@ -21,8 +21,8 @@ use mate_sandbox::store::SandboxStore;
 use mate_tool_http::HttpShared;
 use mate_tool_mcp::McpServers;
 use mate_tui::{
-    CompleteOnboarding, InitialSession, PendingOnboarding, SandboxWiring, SessionDefaults,
-    StartedSessions,
+    CompleteOnboarding, InitialSession, PendingOnboarding, SandboxSettings, SandboxWiring,
+    SessionDefaults, StartedSessions,
 };
 
 use crate::config::{BackendKind, Config, api_token};
@@ -42,7 +42,7 @@ pub async fn run(cli: &crate::cli::Cli, config: &Config) -> Result<(), MateError
                 started.sessions,
                 started.defaults,
                 started.pricing,
-                sandbox_wiring(),
+                sandbox_wiring(config),
             )
             .await
             .map_err(|err| MateError::Io(anyhow::anyhow!(err)))
@@ -60,6 +60,7 @@ async fn run_with_onboarding(cli: &crate::cli::Cli, config: &Config) -> Result<(
 
     let cli = cli.clone();
     let config = config.clone();
+    let wiring = sandbox_wiring(&config);
     let complete: CompleteOnboarding = Box::new(move |backend, model, token| {
         let cli = cli.clone();
         let config = config.with_backend_and_model(backend_kind(backend), model);
@@ -70,7 +71,7 @@ async fn run_with_onboarding(cli: &crate::cli::Cli, config: &Config) -> Result<(
         })
     });
 
-    mate_tui::run_with_onboarding(PendingOnboarding { complete }, sandbox_wiring())
+    mate_tui::run_with_onboarding(PendingOnboarding { complete }, wiring)
         .await
         .map_err(|err| MateError::Io(anyhow::anyhow!(err)))
 }
@@ -80,7 +81,7 @@ async fn run_with_onboarding(cli: &crate::cli::Cli, config: &Config) -> Result<(
 /// as unreachable (agent tabs are unaffected), and a store that cannot be read is left out so a
 /// damaged `sandboxes.json` is never overwritten. The tabs for the stored sessions open
 /// immediately and the TUI reconciles them against Docker in the background.
-fn sandbox_wiring() -> SandboxWiring {
+fn sandbox_wiring(config: &Config) -> SandboxWiring {
     let docker: Option<Arc<dyn DockerApi>> = match BollardDocker::connect() {
         Ok(docker) => Some(Arc::new(docker)),
         Err(err) => {
@@ -103,7 +104,12 @@ fn sandbox_wiring() -> SandboxWiring {
         }
         None => (None, Vec::new()),
     };
-    SandboxWiring::new(docker, store, sessions)
+    SandboxWiring::new(docker, store, sessions).with_settings(SandboxSettings {
+        image: config.sandbox.image.clone(),
+        memory: config.sandbox.memory,
+        pids: config.sandbox.pids,
+        cpus: config.sandbox.cpus,
+    })
 }
 
 /// The one place a catalog backend becomes the CLI's `BackendKind` (see

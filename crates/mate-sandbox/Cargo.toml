@@ -10,6 +10,7 @@ test-support = []
 [dependencies]
 async-trait = { workspace = true }
 bollard = { workspace = true }
+bytes = { workspace = true }
 futures = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -44,8 +44,10 @@ use mate_core::cost::{ModelRate, estimate_cost};
 use mate_core::session::{SessionCmd, SessionEvent, SessionHandle, SessionId, SessionManager};
 use mate_core::streaming::{AgentEvent, UsageRollup};
 use mate_sandbox::attach::AttachOutcome;
+use mate_sandbox::create::create_session;
 use mate_sandbox::docker::{remove_owned, stop_owned, verify_ownership};
 use mate_sandbox::headless::run_headless;
+use mate_sandbox::policy::{NetworkMode, SandboxPolicy, validate_policy};
 use mate_sandbox::report::inspect_session;
 use mate_sandbox::session::{SandboxSession, SandboxStatus};
 use mate_tool_api::{AgentId, DiffLine, SkillMetadata, ToolActivity};
@@ -62,7 +64,7 @@ use crate::onboarding::{
 use crate::panel::Panel;
 use crate::panel_widgets::{PanelFocus, PanelWidgetKind};
 use crate::roster::Roster;
-use crate::sandbox::{SandboxCtx, SandboxEvent, SandboxState, SandboxWiring};
+use crate::sandbox::{SandboxCtx, SandboxEvent, SandboxSettings, SandboxState, SandboxWiring};
 use crate::session_factory::{self, SessionDefaults};
 use crate::slash::SlashCommand;
 use crate::transcript::Transcript;
@@ -291,7 +293,7 @@ fn sandbox_tab_label(title: &str, state: SandboxState) -> String {
         SandboxState::Known(SandboxStatus::Running) => '●',
         SandboxState::Known(SandboxStatus::Exited) => '○',
         SandboxState::Known(SandboxStatus::Created) => '◐',
-        SandboxState::Checking => '…',
+        SandboxState::Checking | SandboxState::Creating => '…',
         SandboxState::Known(SandboxStatus::Missing)
         | SandboxState::Unreachable
         | SandboxState::Failed => '✗',
@@ -494,15 +496,38 @@ pub(crate) enum SpawnField {
     Dir,
     Model,
     Http,
+    /// Agent or sandbox.
+    Kind,
+    /// Sandbox only: the image reference.
+    Image,
+    /// Sandbox only: `none`, `bridge`, or a named network.
+    Network,
 }
+
+/// What `Ctrl+T` creates: an agent session, or a Docker sandbox.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SpawnKind {
+    Agent,
+    Sandbox,
+}
+
+/// Shown under the form when the sandbox network is `none`.
+const NETWORK_NONE_WARNING: &str =
+    "network none: Claude Code cannot reach its API from this sandbox";
 
 /// `Ctrl+T`'s spawn form (`M8-3`): a workspace root, an optional model override, and an http
 /// on/off toggle — the three knobs worth exposing per tab without building a full settings UI.
 /// Everything else a new session needs comes from [`SessionDefaults`].
+#[derive(Clone)]
 struct SpawnForm {
+    kind: SpawnKind,
     dir: String,
     model: String,
     http_enabled: bool,
+    /// Sandbox image; prefilled with the configured (or embedded) default when the form opens.
+    image: String,
+    /// Sandbox network: `none`, `bridge` (also when empty), or a network name.
+    network: String,
     focus: SpawnField,
     error: Option<String>,
 }
@@ -510,27 +535,52 @@ struct SpawnForm {
 impl SpawnForm {
     fn new() -> Self {
         Self {
+            kind: SpawnKind::Agent,
             dir: String::new(),
             model: String::new(),
             http_enabled: true,
+            image: String::new(),
+            network: String::new(),
             focus: SpawnField::Dir,
             error: None,
         }
     }
 
+    /// The fields the current kind shows, in `Tab` order. `Kind` comes last so the form still
+    /// opens on `Dir`.
+    fn fields(&self) -> [SpawnField; 4] {
+        match self.kind {
+            SpawnKind::Agent => [
+                SpawnField::Dir,
+                SpawnField::Model,
+                SpawnField::Http,
+                SpawnField::Kind,
+            ],
+            SpawnKind::Sandbox => [
+                SpawnField::Dir,
+                SpawnField::Image,
+                SpawnField::Network,
+                SpawnField::Kind,
+            ],
+        }
+    }
+
     fn next_field(&mut self) {
-        self.focus = match self.focus {
-            SpawnField::Dir => SpawnField::Model,
-            SpawnField::Model => SpawnField::Http,
-            SpawnField::Http => SpawnField::Dir,
-        };
+        let fields = self.fields();
+        let at = fields.iter().position(|f| *f == self.focus).unwrap_or(0);
+        self.focus = fields[(at + 1) % fields.len()];
     }
 
     fn prev_field(&mut self) {
-        self.focus = match self.focus {
-            SpawnField::Dir => SpawnField::Http,
-            SpawnField::Model => SpawnField::Dir,
-            SpawnField::Http => SpawnField::Model,
+        let fields = self.fields();
+        let at = fields.iter().position(|f| *f == self.focus).unwrap_or(0);
+        self.focus = fields[(at + fields.len() - 1) % fields.len()];
+    }
+
+    fn toggle_kind(&mut self) {
+        self.kind = match self.kind {
+            SpawnKind::Agent => SpawnKind::Sandbox,
+            SpawnKind::Sandbox => SpawnKind::Agent,
         };
     }
 
@@ -538,7 +588,9 @@ impl SpawnForm {
         match self.focus {
             SpawnField::Dir => self.dir.push(c),
             SpawnField::Model => self.model.push(c),
-            SpawnField::Http => {}
+            SpawnField::Image => self.image.push(c),
+            SpawnField::Network => self.network.push(c),
+            SpawnField::Http | SpawnField::Kind => {}
         }
     }
 
@@ -550,8 +602,20 @@ impl SpawnForm {
             SpawnField::Model => {
                 self.model.pop();
             }
-            SpawnField::Http => {}
+            SpawnField::Image => {
+                self.image.pop();
+            }
+            SpawnField::Network => {
+                self.network.pop();
+            }
+            SpawnField::Http | SpawnField::Kind => {}
         }
+    }
+
+    /// The warning to show before confirming a sandbox with no network.
+    fn network_warning(&self) -> Option<&'static str> {
+        (self.kind == SpawnKind::Sandbox && self.network.trim().eq_ignore_ascii_case("none"))
+            .then_some(NETWORK_NONE_WARNING)
     }
 }
 
@@ -594,6 +658,8 @@ pub struct App {
     /// Sessions whose tab was closed this run. The container is untouched and the session stays
     /// in the store, so it reappears on next launch.
     hidden_sandboxes: Vec<SandboxSession>,
+    /// Forms submitted for sandboxes still being created, so a failure can put one back.
+    creating: HashMap<uuid::Uuid, SpawnForm>,
 }
 
 impl App {
@@ -640,6 +706,7 @@ impl App {
             should_quit: false,
             spawn_form: None,
             sandbox: SandboxCtx {
+                settings: SandboxSettings::default(),
                 docker: None,
                 store: None,
                 tx: sandbox_tx,
@@ -647,6 +714,7 @@ impl App {
             sandbox_events,
             pending_attach: None,
             hidden_sandboxes: Vec::new(),
+            creating: HashMap::new(),
         }
     }
 
@@ -654,13 +722,19 @@ impl App {
     /// reports back, and adopts the wiring's Docker client, store, and event channel.
     fn with_sandbox(mut self, wiring: SandboxWiring) -> Self {
         let SandboxWiring {
+            settings,
             docker,
             store,
             sessions,
             events,
             tx,
         } = wiring;
-        self.sandbox = SandboxCtx { docker, store, tx };
+        self.sandbox = SandboxCtx {
+            settings,
+            docker,
+            store,
+            tx,
+        };
         self.sandbox_events = events;
         self.tabs.extend(
             sessions
@@ -735,9 +809,13 @@ impl App {
         let quit_armed = self.quit_armed;
         let close_confirm = self.close_confirm;
         let spawn_form = self.spawn_form.as_ref().map(|form| ui::SpawnFormView {
+            kind: form.kind,
             dir: &form.dir,
             model: &form.model,
             http_enabled: form.http_enabled,
+            image: &form.image,
+            network: &form.network,
+            warning: form.network_warning(),
             focus: form.focus,
             error: form.error.as_deref(),
         });
@@ -1042,7 +1120,9 @@ impl App {
         }
 
         if ctrl && matches!(key.code, KeyCode::Char('t' | 'T')) {
-            self.spawn_form = Some(SpawnForm::new());
+            let mut form = SpawnForm::new();
+            form.image = mate_sandbox::image::default_image(self.sandbox.settings.image.as_deref());
+            self.spawn_form = Some(form);
             return;
         }
 
@@ -1646,6 +1726,11 @@ impl App {
         match key.code {
             KeyCode::Tab => form.next_field(),
             KeyCode::BackTab => form.prev_field(),
+            KeyCode::Char(' ') | KeyCode::Left | KeyCode::Right
+                if form.focus == SpawnField::Kind =>
+            {
+                form.toggle_kind();
+            }
             KeyCode::Char(' ') if form.focus == SpawnField::Http => {
                 form.http_enabled = !form.http_enabled;
             }
@@ -1665,6 +1750,10 @@ impl App {
         let Some(form) = self.spawn_form.take() else {
             return;
         };
+        if form.kind == SpawnKind::Sandbox {
+            self.submit_sandbox_form(form);
+            return;
+        }
         let dir_input = if form.dir.trim().is_empty() {
             ".".to_string()
         } else {
@@ -1746,7 +1835,11 @@ impl App {
         match self.remove_tab_at(idx) {
             Tab::Agent(tab) => self.manager.close(tab.id).await,
             // Hide only: no Docker call, and the session stays stored for the next launch.
-            Tab::Sandbox(tab) => self.hidden_sandboxes.push(tab.session),
+            // A sandbox still being created has no container to come back to.
+            Tab::Sandbox(tab) if tab.state != SandboxState::Creating => {
+                self.hidden_sandboxes.push(tab.session);
+            }
+            Tab::Sandbox(_) => {}
         }
     }
 
@@ -1841,6 +1934,101 @@ impl App {
         self.dirty = true;
         self.on_sandbox_event(SandboxEvent::AttachFinished { id, outcome });
         Ok(())
+    }
+
+    /// Creates a sandbox from the form. Refusals that need no Docker call (a bad directory, an
+    /// invalid policy, no client) put the form back with the reason and create nothing. Otherwise
+    /// a `creating…` tab opens at once, so image pull or build progress has somewhere to show,
+    /// and a task does the work and reports [`SandboxEvent::Created`] or
+    /// [`SandboxEvent::CreateFailed`].
+    fn submit_sandbox_form(&mut self, form: SpawnForm) {
+        let refuse = |this: &mut Self, form: SpawnForm, reason: String| {
+            this.spawn_form = Some(SpawnForm {
+                error: Some(reason),
+                ..form
+            });
+        };
+        let dir_input = if form.dir.trim().is_empty() {
+            ".".to_string()
+        } else {
+            form.dir.clone()
+        };
+        let root = match dunce::canonicalize(&dir_input) {
+            Ok(root) => root,
+            Err(_) => {
+                let reason = format!("no such directory: {dir_input}");
+                return refuse(self, form, reason);
+            }
+        };
+        let mut policy = SandboxPolicy::new(&root);
+        policy.network = match form.network.trim() {
+            "" | "bridge" => NetworkMode::Bridge,
+            name if name.eq_ignore_ascii_case("none") => NetworkMode::None,
+            name => NetworkMode::Custom(name.to_owned()),
+        };
+        let settings = self.sandbox.settings.clone();
+        policy.memory_limit = settings.memory;
+        policy.pids_limit = settings.pids;
+        policy.cpu_limit = settings.cpus;
+        if let Err(err) = validate_policy(&policy, std::env::var("DOCKER_HOST").ok().as_deref()) {
+            return refuse(self, form, err.to_string());
+        }
+        let Some(docker) = self.sandbox.docker.clone() else {
+            return refuse(self, form, SandboxState::Unreachable.label().to_owned());
+        };
+        let image = match form.image.trim() {
+            "" => mate_sandbox::image::default_image(settings.image.as_deref()),
+            image => image.to_owned(),
+        };
+
+        let id = uuid::Uuid::new_v4();
+        let placeholder = SandboxSession {
+            id,
+            name: SandboxSession::container_name(&id),
+            container_id: String::new(),
+            image: image.clone(),
+            workspace: root,
+            policy: policy.clone(),
+            claude_session_id: None,
+            status: SandboxStatus::Created,
+            created_at: 0,
+        };
+        self.tabs.push(Tab::Sandbox(SandboxTab::new(
+            placeholder,
+            SandboxState::Creating,
+        )));
+        let new_idx = self.tabs.len() - 1;
+        self.dirty = true;
+        self.switch_to(new_idx);
+        self.creating.insert(id, form);
+
+        let tx = self.sandbox.tx.clone();
+        tokio::spawn(async move {
+            let progress_tx = tx.clone();
+            let mut progress = move |line: String| {
+                let _ = progress_tx.try_send(SandboxEvent::PullProgress { id, line });
+            };
+            let events = match create_session(docker.as_ref(), id, &image, policy, &mut progress)
+                .await
+            {
+                Ok(created) => {
+                    let mut events = vec![SandboxEvent::Created {
+                        session: created.session,
+                    }];
+                    events.extend(created.contract_issues.into_iter().map(|message| {
+                        SandboxEvent::Error { id, message }
+                    }));
+                    events
+                }
+                Err(err) => vec![SandboxEvent::CreateFailed {
+                    id,
+                    message: err.to_string(),
+                }],
+            };
+            for event in events {
+                let _ = tx.send(event).await;
+            }
+        });
     }
 
     /// `/inspect`: fetches the report in a task; it arrives as [`SandboxEvent::Report`].
@@ -2060,8 +2248,8 @@ impl App {
             .tabs
             .iter()
             .filter_map(|tab| match tab {
-                Tab::Sandbox(t) => Some(t.session.clone()),
-                Tab::Agent(_) => None,
+                Tab::Sandbox(t) if t.state != SandboxState::Creating => Some(t.session.clone()),
+                Tab::Sandbox(_) | Tab::Agent(_) => None,
             })
             .chain(self.hidden_sandboxes.iter().cloned())
             .collect();
@@ -2075,12 +2263,41 @@ impl App {
     fn on_sandbox_event(&mut self, event: SandboxEvent) {
         if let SandboxEvent::Created { session } = event {
             let state = SandboxState::Known(session.status);
-            self.tabs
-                .push(Tab::Sandbox(SandboxTab::new(session, state)));
-            let new_idx = self.tabs.len() - 1;
             self.dirty = true;
-            self.switch_to(new_idx);
+            self.creating.remove(&session.id);
+            // The form opened a placeholder tab: fill it in rather than adding a second one.
+            if let Some(tab) = self.tabs.iter_mut().find_map(|t| match t {
+                Tab::Sandbox(t) if t.session.id == session.id => Some(t),
+                _ => None,
+            }) {
+                tab.session = session;
+                tab.state = state;
+                tab.progress = None;
+                tab.note("sandbox ready: /attach to log in to Claude Code");
+            } else {
+                self.tabs
+                    .push(Tab::Sandbox(SandboxTab::new(session, state)));
+                let new_idx = self.tabs.len() - 1;
+                self.switch_to(new_idx);
+            }
             self.persist_sandboxes();
+            return;
+        }
+        if let SandboxEvent::CreateFailed { id, message } = &event {
+            self.dirty = true;
+            if let Some(idx) = self
+                .tabs
+                .iter()
+                .position(|t| matches!(t, Tab::Sandbox(s) if s.session.id == *id))
+            {
+                self.remove_tab_at(idx);
+            }
+            if let Some(form) = self.creating.remove(id) {
+                self.spawn_form = Some(SpawnForm {
+                    error: Some(message.clone()),
+                    ..form
+                });
+            }
             return;
         }
         let id = event.id();
@@ -2172,7 +2389,9 @@ impl App {
                 tab.error(message);
                 attention = true;
             }
-            SandboxEvent::Created { .. } | SandboxEvent::Removed { .. } => {}
+            SandboxEvent::Created { .. }
+            | SandboxEvent::CreateFailed { .. }
+            | SandboxEvent::Removed { .. } => {}
         }
         if !is_active {
             if attention {
@@ -2686,10 +2905,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         app.spawn_form = Some(SpawnForm {
             dir: tmp.path().to_string_lossy().into_owned(),
-            model: String::new(),
-            http_enabled: true,
-            focus: SpawnField::Dir,
-            error: None,
+            ..SpawnForm::new()
         });
 
         app.submit_spawn_form().await;
@@ -2704,10 +2920,7 @@ mod tests {
         let mut app = test_app(1);
         app.spawn_form = Some(SpawnForm {
             dir: "/does/not/exist/anywhere".to_string(),
-            model: String::new(),
-            http_enabled: true,
-            focus: SpawnField::Dir,
-            error: None,
+            ..SpawnForm::new()
         });
 
         app.submit_spawn_form().await;
@@ -3982,6 +4195,129 @@ mod tests {
         );
         app.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)).await;
         assert!(sandbox_tab(&app, 1).report.is_none(), "Esc closes the report");
+    }
+
+    fn sandbox_form(dir: &str, network: &str) -> SpawnForm {
+        SpawnForm {
+            kind: SpawnKind::Sandbox,
+            dir: dir.to_string(),
+            network: network.to_string(),
+            ..SpawnForm::new()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_sandbox_form_with_a_bad_directory_is_refused_without_touching_docker() {
+        let fake = Arc::new(mate_sandbox::fake::FakeDocker::default());
+        let docker: Arc<dyn mate_sandbox::docker::DockerApi> = fake.clone();
+        let mut app = test_app(1).with_sandbox(SandboxWiring::new(Some(docker), None, vec![]));
+        app.spawn_form = Some(sandbox_form("/does/not/exist/anywhere", ""));
+        app.submit_spawn_form().await;
+        assert_eq!(app.tabs.len(), 1, "no sandbox tab opens for a bad directory");
+        assert!(
+            app.spawn_form.as_ref().and_then(|f| f.error.as_deref()).is_some(),
+            "the form stays open with the reason"
+        );
+        assert!(fake.calls().is_empty(), "no container call is made for a bad directory");
+    }
+
+    #[tokio::test]
+    async fn choosing_the_none_network_shows_a_warning_before_confirming() {
+        let tmp = tempfile::tempdir().unwrap();
+        let none = sandbox_form(&tmp.path().to_string_lossy(), "none");
+        assert_eq!(
+            none.network_warning(),
+            Some(NETWORK_NONE_WARNING),
+            "none warns that Claude Code cannot reach its API"
+        );
+        assert_eq!(
+            sandbox_form(&tmp.path().to_string_lossy(), "bridge").network_warning(),
+            None,
+            "bridge needs no warning"
+        );
+        let mut app = test_app(1);
+        app.spawn_form = Some(none);
+        assert!(
+            app.view().spawn_form.and_then(|f| f.warning).is_some(),
+            "the warning reaches the rendered form"
+        );
+    }
+
+    #[test]
+    fn the_kind_field_switches_which_fields_tab_visits() {
+        let mut form = SpawnForm::new();
+        form.next_field();
+        assert_eq!(form.focus, SpawnField::Model, "an agent form visits model after dir");
+        form.focus = SpawnField::Kind;
+        form.toggle_kind();
+        form.focus = SpawnField::Dir;
+        form.next_field();
+        assert_eq!(form.focus, SpawnField::Image, "a sandbox form visits image after dir");
+        form.next_field();
+        assert_eq!(form.focus, SpawnField::Network, "then the network");
+    }
+
+    #[tokio::test]
+    async fn submitting_a_sandbox_form_opens_a_creating_tab_that_the_created_event_fills() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fake = mate_sandbox::fake::FakeDocker::default();
+        fake.images
+            .lock()
+            .unwrap()
+            .insert(mate_sandbox::image::embedded_tag());
+        let fake = Arc::new(fake);
+        let docker: Arc<dyn mate_sandbox::docker::DockerApi> = fake.clone();
+        let mut app = test_app(1).with_sandbox(SandboxWiring::new(Some(docker), None, vec![]));
+        app.spawn_form = Some(sandbox_form(&tmp.path().to_string_lossy(), ""));
+        app.submit_spawn_form().await;
+        assert_eq!(
+            sandbox_tab(&app, 1).state,
+            SandboxState::Creating,
+            "the tab opens at once, while the container is made"
+        );
+        loop {
+            let event = app.sandbox_events.recv().await.unwrap();
+            let created = matches!(event, SandboxEvent::Created { .. });
+            app.on_sandbox_event(event);
+            if created {
+                break;
+            }
+        }
+        assert_eq!(app.tabs.len(), 2, "the created event fills the placeholder, not a second tab");
+        assert_eq!(
+            sandbox_tab(&app, 1).state,
+            SandboxState::Known(SandboxStatus::Running),
+            "a created sandbox is running"
+        );
+        assert!(
+            fake.calls().iter().any(|c| c.starts_with("create_container")),
+            "the container was created through the Docker API"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_create_closes_the_placeholder_and_reopens_the_form_with_the_reason() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fake = mate_sandbox::fake::FakeDocker::default();
+        *fake.build_error.lock().unwrap() = Some("npm ERR! boom".into());
+        let docker: Arc<dyn mate_sandbox::docker::DockerApi> = Arc::new(fake);
+        let mut app = test_app(1).with_sandbox(SandboxWiring::new(Some(docker), None, vec![]));
+        app.spawn_form = Some(sandbox_form(&tmp.path().to_string_lossy(), ""));
+        app.submit_spawn_form().await;
+        loop {
+            let event = app.sandbox_events.recv().await.unwrap();
+            let failed = matches!(event, SandboxEvent::CreateFailed { .. });
+            app.on_sandbox_event(event);
+            if failed {
+                break;
+            }
+        }
+        assert_eq!(app.tabs.len(), 1, "the placeholder tab is closed");
+        let error = app.spawn_form.as_ref().and_then(|f| f.error.clone()).unwrap_or_default();
+        assert!(
+            error.contains("npm ERR! boom"),
+            "the form reopens with the build error, got {error:?}"
+        );
     }
 
     #[tokio::test]

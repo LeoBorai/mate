@@ -7,7 +7,8 @@ Docker access sits behind this crate; `bollard` never leaks into `mate-core`.
 
 | Module | Role |
 |---|---|
-| `docker` | `DockerApi` trait, `BollardDocker`, error mapping, ownership guard, `exec_collect`, `ensure_image` |
+| `image` | the embedded Dockerfile and `tmux.conf`, the `mate-sandbox:<hash12>` tag, the in-memory tar build context |
+| `docker` | `DockerApi` trait, `BollardDocker`, error mapping, ownership guard, `exec_collect`, `ensure_image` (build or pull) |
 | `policy` | `SandboxPolicy`, `validate_policy`, pure `policy_to_host_config` |
 | `spec` | `image_identity`, pure `build_container_spec` |
 | `session` / `store` | `SandboxSession`, `sandboxes.json` persistence (temp file, fsync, rename) |
@@ -67,10 +68,32 @@ Containers keep running when `mate` exits; stop and remove are explicit.
 
 ## Image contract
 
-The image (default `ghcr.io/leoborai/dkc:latest`) must provide `tmux` (with
-`status off` for a clean screen), a non-root user, and a `$HOME/.claude`
-directory owned by that user. Docker copies a directory's ownership into a new
-named volume only if the directory exists in the image.
+Any sandbox image must provide `tmux` (with `status off` for a clean screen),
+a non-root user, and a `$HOME/.claude` directory owned by that user. Docker
+copies a directory's ownership into a new named volume only if the directory
+exists in the image.
+
+## Embedded image
+
+`crates/mate-sandbox/image/Dockerfile` and `tmux.conf` are embedded in the
+binary with `include_str!` (so they ship with `cargo package`). The image is
+Debian slim with `tmux`, `git`, `curl`, Node, Claude Code installed with
+`npm`, and the non-root user `claude` owning `/home/claude/.claude`.
+
+- **Tag.** `mate-sandbox:<hash12>`: the first 12 hex characters of a SHA-256
+  over both files (each length-prefixed). Changing either file gives a new
+  tag, so an unchanged image is reused and a changed one is rebuilt.
+- **Build.** `ensure_image` inspects the image; when the reference is the
+  current embedded tag and it is absent, it sends an in-memory tar of the two
+  files to the daemon's build API and streams the output lines to the tab. A
+  failing step becomes `SandboxError::Docker { op: "build_image", .. }` with
+  the step's message, and nothing is created. Any other reference is pulled.
+- **Override.** `[sandbox] image` (see `config.md`) replaces the embedded
+  image and is never built; it must meet the contract above. Create probes
+  `test -w "$CLAUDE_CONFIG_DIR"` and reports a missing part.
+- **Staleness.** The tag reflects only the embedded files, so Claude Code's
+  version floats until they change. Build your own image and set `image` to
+  pin a version.
 
 ## crossterm `EventStream` and buffered input
 
